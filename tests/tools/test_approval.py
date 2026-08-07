@@ -673,6 +673,46 @@ class TestForkBombDetection:
         assert dangerous is False
 
 
+class TestExpandedHardlineFloor:
+    @pytest.mark.parametrize(
+        "command",
+        (
+            "wipefs -a /dev/sda",
+            "blkdiscard /dev/nvme0n1",
+            "sgdisk --zap-all /dev/vda",
+            "nvme format /dev/nvme0n1 --ses=1",
+            "nvme sanitize /dev/nvme0n1 -a 2",
+            "cp image.raw /dev/sda",
+            "echo payload | tee /dev/mmcblk0",
+            "shred -n 1 /dev/vda",
+            "find /home -depth -delete",
+            "find '$HOME' -delete",
+            "zpool destroy tank",
+            "zfs destroy -r tank/home",
+            "lvremove -y vg/data",
+            "vgremove vg0",
+            "pvremove /dev/sdb",
+        ),
+    )
+    def test_unrecoverable_equivalents_are_hardline_blocked(self, command):
+        blocked, description = detect_hardline_command(command)
+        assert blocked is True, command
+        assert description
+
+    @pytest.mark.parametrize(
+        "command",
+        (
+            "wipefs /tmp/disk.img",
+            "cp /dev/sda /tmp/disk.img",
+            "find . -name '*.tmp' -delete",
+            "zfs list tank/home",
+            "lvdisplay vg/data",
+        ),
+    )
+    def test_recoverable_or_read_only_neighbors_are_not_hardline(self, command):
+        assert detect_hardline_command(command) == (False, None)
+
+
 class TestGatewayProtection:
     """Prevent agents from starting the gateway outside systemd management."""
 

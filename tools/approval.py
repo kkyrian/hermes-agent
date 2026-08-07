@@ -430,6 +430,8 @@ _HARDLINE_SYSTEM_DIRS = (
 # catching `rm -rf "/"`.
 _RM_FLAG_PREFIX = _CMDPOS + r'rm\s+(-[^\s]*\s+)*'
 
+_HARDLINE_BLOCK_DEVICE = r'/dev/(?:sd[a-z][a-z0-9]*|hd[a-z][a-z0-9]*|vd[a-z][a-z0-9]*|xvd[a-z][a-z0-9]*|mmcblk\d+(?:p\d+)?|nvme\d+n\d+(?:p\d+)?)'
+
 HARDLINE_PATTERNS = [
     # rm recursive targeting the root filesystem or protected roots.
     # `${HOME}` brace form and quoted paths (`rm -rf "/"`, `rm -rf "$HOME"`)
@@ -455,6 +457,14 @@ HARDLINE_PATTERNS = [
     # Raw block device overwrites (dd + redirection)
     (r'\bdd\b[^\n]*\bof=/dev/(sd|nvme|hd|mmcblk|vd|xvd)[a-z0-9]*', "dd to raw block device"),
     (r'>\s*/dev/(sd|nvme|hd|mmcblk|vd|xvd)[a-z0-9]*\b', "redirect to raw block device"),
+    (rf'\b(?:wipefs|blkdiscard|shred)\b[^\n]*["\']?{_HARDLINE_BLOCK_DEVICE}\b', "erase or discard an entire raw block device"),
+    (rf'\bsgdisk\b[^\n]*(?:--zap-all|-Z)\b[^\n]*["\']?{_HARDLINE_BLOCK_DEVICE}\b', "erase a raw block-device partition table"),
+    (rf'\bnvme\b\s+(?:format|sanitize)\b[^\n]*["\']?{_HARDLINE_BLOCK_DEVICE}\b', "destructive NVMe format/sanitize"),
+    (rf'(?:\bcp\b[^\n]*\s+["\']?{_HARDLINE_BLOCK_DEVICE}["\']?\s*(?:$|\n)|\btee\b[^\n]*["\']?{_HARDLINE_BLOCK_DEVICE}\b)', "write to an entire raw block device"),
+    # Non-rm spellings of the same unrecoverable recursive deletion floor.
+    (rf'\bfind\s+["\']?(?:/|{_HARDLINE_SYSTEM_DIRS}|~|\$\{{?HOME\}}?)["\']?[^\n]*-delete\b', "recursive find deletion of root/system/home"),
+    # Whole storage-pool / volume destruction has no ordinary recovery path.
+    (r'\b(?:(?:zpool|zfs)\s+destroy|(?:lvremove|vgremove|pvremove))\b', "destroy a ZFS or LVM storage layer"),
     # Fork bomb (classic shell form)
     (r':\(\)\s*\{\s*:\s*\|\s*:\s*&\s*\}\s*;\s*:', "fork bomb"),
     # Kill every process on the system
