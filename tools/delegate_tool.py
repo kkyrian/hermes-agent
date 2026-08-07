@@ -479,7 +479,55 @@ def _normalize_role(r: Optional[str]) -> str:
     return "leaf"
 
 
-def _get_max_concurrent_children() -> int:
+def _depth_concurrency_limits(cfg: Optional[dict] = None) -> Dict[int, int]:
+    """Return validated ``delegation.max_concurrent_children_by_depth``.
+
+    YAML accepts integer and string keys, so normalize both to non-negative
+    integers. Invalid entries are ignored with a warning; missing depths keep
+    the backward-compatible scalar limit.
+    """
+    cfg = cfg if cfg is not None else _load_config()
+    raw = cfg.get("max_concurrent_children_by_depth")
+    if raw in (None, {}):
+        return {}
+    if not isinstance(raw, dict):
+        logger.warning(
+            "delegation.max_concurrent_children_by_depth=%r must be a mapping; ignoring it",
+            raw,
+        )
+        return {}
+    limits: Dict[int, int] = {}
+    max_spawn = _get_max_spawn_depth()
+    for raw_depth, raw_limit in raw.items():
+        try:
+            depth = int(raw_depth)
+            limit = int(raw_limit)
+        except (TypeError, ValueError):
+            logger.warning(
+                "delegation.max_concurrent_children_by_depth entry %r: %r is invalid; ignoring it",
+                raw_depth,
+                raw_limit,
+            )
+            continue
+        if depth < 0 or limit < 1:
+            logger.warning(
+                "delegation.max_concurrent_children_by_depth entry %r: %r requires depth >= 0 and limit >= 1; ignoring it",
+                raw_depth,
+                raw_limit,
+            )
+            continue
+        if depth >= max_spawn:
+            logger.warning(
+                "delegation.max_concurrent_children_by_depth[%d]=%d has no effect while max_spawn_depth=%d",
+                depth,
+                limit,
+                max_spawn,
+            )
+        limits[depth] = limit
+    return limits
+
+
+def _get_max_concurrent_children(depth: Optional[int] = None) -> int:
     """Read delegation.max_concurrent_children from config, falling back to
     DELEGATION_MAX_CONCURRENT_CHILDREN env var, then the default (3).
 
@@ -489,6 +537,10 @@ def _get_max_concurrent_children() -> int:
     uses, keeping config priority consistent (config.yaml > env > default).
     """
     cfg = _load_config()
+    if depth is not None:
+        resolved = _depth_concurrency_limits(cfg).get(max(0, int(depth)))
+        if resolved is not None:
+            return resolved
     val = cfg.get("max_concurrent_children")
     if val is not None:
         try:
@@ -2863,7 +2915,7 @@ def delegate_task(
         return tool_error(str(exc))
 
     # Normalize to task list
-    max_children = _get_max_concurrent_children()
+    max_children = _get_max_concurrent_children(depth)
     recovered_tasks, tasks_error = _recover_tasks_from_json_string(tasks)
     if tasks_error:
         return tool_error(tasks_error)
@@ -3329,7 +3381,7 @@ def delegate_task(
             parent_session_id=_parent_session_id,
             runner=_batch_runner,
             interrupt_fn=_batch_interrupt,
-            max_async_children=_get_max_async_children(),
+            max_async_children=max_children,
             # Reuse the live-transcript directory's id (when created) so the
             # returned delegation_id matches cache/delegation/live/<id>/.
             delegation_id=live_deleg_id,
@@ -3700,11 +3752,19 @@ def _build_tasks_param_description() -> str:
     """Compose the 'tasks' parameter description with current concurrency limit."""
     try:
         max_children = _get_max_concurrent_children()
+        depth_limits = _depth_concurrency_limits()
     except Exception:
         max_children = _DEFAULT_MAX_CONCURRENT_CHILDREN
+        depth_limits = {}
+    depth_note = ""
+    if depth_limits:
+        rendered = ", ".join(
+            f"depth {depth}: {limit}" for depth, limit in sorted(depth_limits.items())
+        )
+        depth_note = f" Depth overrides: {rendered}."
     return (
         f"Batch mode: tasks to run in parallel (up to {max_children} for this "
-        f"user, set via delegation.max_concurrent_children). Each gets "
+        f"profile by default, set via delegation.max_concurrent_children).{depth_note} Each gets "
         "its own subagent with isolated context and terminal session. "
         "When provided, top-level goal/context/role are ignored."
     )

@@ -1275,6 +1275,27 @@ class TestConcurrencyDefaults(unittest.TestCase):
                 self.assertEqual(_load_config()["max_concurrent_children"], 50)
                 self.assertEqual(_get_max_concurrent_children(), 50)
 
+    @patch("tools.delegate_tool._load_config")
+    def test_max_concurrent_children_resolves_by_delegator_depth(self, mock_cfg):
+        mock_cfg.return_value = {
+            "max_concurrent_children": 5,
+            "max_concurrent_children_by_depth": {0: 16, "1": 3},
+            "max_spawn_depth": 2,
+        }
+        self.assertEqual(_get_max_concurrent_children(0), 16)
+        self.assertEqual(_get_max_concurrent_children(1), 3)
+        self.assertEqual(_get_max_concurrent_children(2), 5)
+        self.assertEqual(_get_max_concurrent_children(), 5)
+
+    @patch("tools.delegate_tool._load_config")
+    def test_invalid_depth_concurrency_entries_fall_back_to_scalar(self, mock_cfg):
+        mock_cfg.return_value = {
+            "max_concurrent_children": 7,
+            "max_concurrent_children_by_depth": {-1: 4, 0: 0, "bad": 2},
+            "max_spawn_depth": 2,
+        }
+        self.assertEqual(_get_max_concurrent_children(0), 7)
+
 
     @patch("tools.delegate_tool._load_config",
            return_value={"max_concurrent_children": 0})
