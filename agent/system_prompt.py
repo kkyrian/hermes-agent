@@ -573,6 +573,19 @@ def build_system_prompt(agent: Any, system_message: Optional[str] = None) -> str
     return joined
 
 
+def render_model_visible_context_blocks(
+    agent: Any, system_message: Optional[str] = None,
+) -> Dict[str, str]:
+    """Render current canonical prompt tiers without mutating the cached prompt.
+
+    Context-delta plugins can compare these blocks with their prior snapshot
+    and append revisions to a real user turn. The active session's cached
+    system prompt remains byte-identical until Hermes's normal compaction or
+    reset boundary.
+    """
+    return build_system_prompt_parts(agent, system_message=system_message)
+
+
 def invalidate_system_prompt(agent: Any) -> None:
     """Invalidate the cached system prompt, forcing a rebuild on the next turn.
 
@@ -666,6 +679,7 @@ def format_tools_for_system_message(agent: Any) -> str:
 __all__ = [
     "build_system_prompt_parts",
     "build_system_prompt",
+    "render_model_visible_context_blocks",
     "invalidate_system_prompt",
     "format_tools_for_system_message",
 ]

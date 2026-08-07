@@ -1052,6 +1052,15 @@ def build_turn_context(
     plugin_user_context = ""
     try:
         from hermes_cli.lifecycle import invoke_hook as _invoke_hook
+        try:
+            from agent.system_prompt import render_model_visible_context_blocks
+
+            _model_visible_context_blocks = render_model_visible_context_blocks(
+                agent, system_message=system_message,
+            )
+        except Exception as _render_exc:
+            logger.warning("model-visible context render failed: %s", _render_exc)
+            _model_visible_context_blocks = {}
         _pre_results = _invoke_hook(
             "pre_llm_call",
             session_id=agent.session_id,
@@ -1062,8 +1071,10 @@ def build_turn_context(
             is_first_turn=(not bool(conversation_history)),
             model=agent.model,
             platform=getattr(agent, "platform", None) or "",
+            prompt_reset=_preflight_compressed,
             parent_session_id=getattr(agent, "_parent_session_id", None) or "",
             sender_id=getattr(agent, "_user_id", None) or "",
+            model_visible_context_blocks=_model_visible_context_blocks,
         )
         _ctx_parts: list[str] = []
         # Spill oversized per-hook context to disk so a runaway plugin
