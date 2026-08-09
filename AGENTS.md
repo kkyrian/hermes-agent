@@ -4,6 +4,30 @@ Instructions for AI coding assistants and developers working on the hermes-agent
 
 **Never give up on the right solution.**
 
+## KK public fork maintenance
+
+This checkout participates in the public fork `kkyrian/hermes-agent`.
+
+- `origin` is the writable KK fork; `upstream` is `NousResearch/hermes-agent`.
+- `kk/handler-runtime` is the single durable KK patch branch and the source for reviewed
+  Handler-managed Hermes release generations. Temporary task, candidate, and review branches are
+  allowed only as isolated work surfaces; integrate accepted work into `kk/handler-runtime`, push
+  it, and retire the temporary branch when safe.
+- Never put profile data, memories, logs, credentials, private workspace instructions, machine-local
+  launch configuration, or deployment evidence in this public repository.
+- A conflict-free upstream replay is not a release gate by itself. Re-run the tests and real canary
+  appropriate to the changed surfaces before advancing the canonical branch or deployment.
+- Handler-managed Discord agents run immutable release generations. Do not use Hermes's native
+  `hermes update` as their update mechanism; it bypasses the KK patch queue and Handler's reviewed
+  build, rollback, restart, and semantic-recovery gates.
+- Keep Handler runtime-profile selection distinct from Hermes data profiles: Handler's standard
+  runtime-profile name `hermes` selects the launcher, while each channel retains its own Hermes
+  `--profile`; threads intentionally derive their parent channel profile.
+
+The deployment/update procedure is owned by `kk-handler-core` at
+`_shared/_workflow-recipes/hermes-managed-release.md`. Hermes implementation and tests stay here;
+Handler integration stays in `kk-handler-core`.
+
 ## What Hermes Is
 
 Hermes is a personal AI agent that runs the same agent core across a CLI, a
