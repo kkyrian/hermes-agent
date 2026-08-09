@@ -1241,6 +1241,12 @@ def build_turn_context(
         except Exception as _render_exc:
             logger.warning("model-visible context render failed: %s", _render_exc)
             _model_visible_context_blocks = {}
+        try:
+            from tools.file_tools import _resolve_base_dir
+
+            _logical_cwd = str(_resolve_base_dir(effective_task_id))
+        except Exception:
+            _logical_cwd = None
         _pre_results = _invoke_hook(
             "pre_llm_call",
             session_id=agent.session_id,
@@ -1255,6 +1261,7 @@ def build_turn_context(
             parent_session_id=getattr(agent, "_parent_session_id", None) or "",
             sender_id=getattr(agent, "_user_id", None) or "",
             model_visible_context_blocks=_model_visible_context_blocks,
+            cwd=_logical_cwd,
         )
         _ctx_parts: list[str] = []
         # Spill oversized per-hook context to disk so a runaway plugin
