@@ -7994,6 +7994,20 @@ _AUX_DIRECT_API_BASE_URLS: Dict[str, str] = {
 }
 
 
+def _optional_config_text(value: Any) -> Optional[str]:
+    """Normalize an optional YAML scalar without stringifying ``null``.
+
+    ``yaml.safe_load`` represents ``null`` as ``None``. Calling ``str(None)``
+    turns absence into the literal value ``"None"``, which then overrides
+    auxiliary auto-routing instead of inheriting the current parent runtime.
+    Non-string scalars retain the existing string-coercion behavior.
+    """
+    if value is None:
+        return None
+    normalized = str(value).strip()
+    return normalized or None
+
+
 def _resolve_task_provider_model(
     task: str = None,
     provider: str = None,
@@ -8022,18 +8036,18 @@ def _resolve_task_provider_model(
 
     if task:
         task_config = _get_auxiliary_task_config(task)
-        cfg_provider = str(task_config.get("provider", "")).strip() or None
-        cfg_model = str(task_config.get("model", "")).strip() or None
-        cfg_base_url = str(task_config.get("base_url", "")).strip() or None
-        cfg_api_key = str(task_config.get("api_key", "")).strip() or None
+        cfg_provider = _optional_config_text(task_config.get("provider"))
+        cfg_model = _optional_config_text(task_config.get("model"))
+        cfg_base_url = _optional_config_text(task_config.get("base_url"))
+        cfg_api_key = _optional_config_text(task_config.get("api_key"))
         # Resolve key_env → env var when api_key is not set directly
         if not cfg_api_key:
-            cfg_key_env = str(
+            cfg_key_env = _optional_config_text(
                 task_config.get("key_env") or task_config.get("api_key_env") or ""
-            ).strip()
+            )
             if cfg_key_env:
                 cfg_api_key = _scoped_key_env(cfg_key_env) or None
-        cfg_api_mode = str(task_config.get("api_mode", "")).strip() or None
+        cfg_api_mode = _optional_config_text(task_config.get("api_mode"))
 
     # 'auto' is a sentinel meaning "inherit from main runtime / auto-detect", not
     # a literal model id. Without this, a config of `auxiliary.<task>.model: auto`

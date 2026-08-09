@@ -1,9 +1,13 @@
 import json
 import logging
+import time
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from agent.conversation_compression import compress_context
+from agent.conversation_compression import (
+    _emit_compression_attempt_telemetry,
+    compress_context,
+)
 from agent.context_compressor import ContextCompressor
 
 
@@ -149,3 +153,68 @@ def test_aux_call_telemetry_records_durations_without_content(caplog):
     raw_log = json.dumps(payload)
     assert "TOPSECRET_TRANSCRIPT_TEXT" not in raw_log
     assert "SANITIZED SUMMARY" not in raw_log
+
+
+def test_boundary_snapshot_preserves_fallback_truth_after_state_clear(caplog):
+    with patch("agent.context_compressor.get_model_context_length", return_value=100_000):
+        compressor = ContextCompressor(
+            model="test/main-model",
+            provider="test-provider",
+            threshold_percent=0.50,
+            quiet_mode=True,
+            config_context_length=100_000,
+        )
+    agent = _Agent(compressor)
+    attempt_snapshot = {
+        "event": "compression_attempt",
+        "attempt_id": "attempt-before-boundary",
+        "session_id": agent.session_id,
+        "aux_provider": "parent-provider",
+        "aux_model": "parent-model",
+        "fallback_used": True,
+    }
+
+    # Rotation/context-engine callbacks may reset all per-session compressor
+    # state before the boundary result is emitted.
+    compressor.on_session_end(agent.session_id, [])
+
+    with caplog.at_level(logging.INFO, logger="agent.conversation_compression"):
+        _emit_compression_attempt_telemetry(
+            agent,
+            started_at=time.monotonic(),
+            commit_status="committed",
+            split_status="rotated_committed",
+            attempt_telemetry=attempt_snapshot,
+            fallback_used=True,
+        )
+
+    payload = _extract_telemetry(caplog)
+    assert payload["attempt_id"] == "attempt-before-boundary"
+    assert payload["aux_provider"] == "parent-provider"
+    assert payload["aux_model"] == "parent-model"
+    assert payload["fallback_used"] is True
+
+
+def test_aux_failure_without_static_fallback_is_not_reported_as_fallback(caplog):
+    with patch("agent.context_compressor.get_model_context_length", return_value=100_000):
+        compressor = ContextCompressor(
+            model="test/main-model",
+            provider="test-provider",
+            threshold_percent=0.50,
+            quiet_mode=True,
+            config_context_length=100_000,
+        )
+    agent = _Agent(compressor)
+    compressor._last_aux_model_failure_model = "failed-aux-model"
+    compressor._last_summary_fallback_used = False
+
+    with caplog.at_level(logging.INFO, logger="agent.conversation_compression"):
+        _emit_compression_attempt_telemetry(
+            agent,
+            started_at=time.monotonic(),
+            commit_status="aborted",
+            split_status="aborted",
+            failure_class="summary_generation_aborted",
+        )
+
+    assert _extract_telemetry(caplog)["fallback_used"] is False

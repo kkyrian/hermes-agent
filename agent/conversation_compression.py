@@ -1159,10 +1159,16 @@ def _emit_compression_attempt_telemetry(
     commit_status: str,
     split_status: str,
     failure_class: str | None = None,
+    attempt_telemetry: dict[str, Any] | None = None,
+    fallback_used: bool | None = None,
 ) -> None:
     """Emit one content-free JSON log line for a compression attempt."""
     try:
-        telemetry = getattr(agent.context_compressor, "_last_compression_telemetry", None)
+        telemetry = attempt_telemetry
+        if not isinstance(telemetry, dict):
+            telemetry = getattr(
+                agent.context_compressor, "_last_compression_telemetry", None
+            )
         if not isinstance(telemetry, dict):
             telemetry = {}
         payload = dict(telemetry)
@@ -1178,8 +1184,8 @@ def _emit_compression_attempt_telemetry(
         payload.setdefault("chunk_count", 0)
         payload["fallback_used"] = bool(
             payload.get("fallback_used")
+            or fallback_used
             or getattr(agent.context_compressor, "_last_summary_fallback_used", False)
-            or getattr(agent.context_compressor, "_last_aux_model_failure_model", None)
         )
         logger.info(
             "context compression attempt telemetry: %s",
@@ -3127,6 +3133,13 @@ def compress_context(
         _compression_feasibility_skip = bool(
             getattr(agent.context_compressor, "_last_feasibility_skip", False)
         )
+        _compression_attempt_telemetry = getattr(
+            agent.context_compressor, "_last_compression_telemetry", None
+        )
+        if isinstance(_compression_attempt_telemetry, dict):
+            _compression_attempt_telemetry = dict(_compression_attempt_telemetry)
+        else:
+            _compression_attempt_telemetry = None
 
         # If compression aborted (aux LLM failed to produce a usable summary)
         # the compressor returns the input messages unchanged.  Surface the
@@ -3961,6 +3974,8 @@ def compress_context(
                 if split_status in {"failed_not_indexed", "aborted"}
                 else None
             ),
+            attempt_telemetry=_compression_attempt_telemetry,
+            fallback_used=_compression_used_fallback,
         )
         return compressed, new_system_prompt
     finally:
