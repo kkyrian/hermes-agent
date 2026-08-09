@@ -107,6 +107,55 @@ class TestAuxiliaryMaxTokensParam:
 
 
 class TestResolveTaskProviderModel:
+    def test_yaml_null_task_values_remain_absent_for_parent_routing(self):
+        task_config = {
+            "provider": None,
+            "model": None,
+            "base_url": None,
+            "api_key": None,
+            "key_env": None,
+            "api_mode": None,
+        }
+        with patch(
+            "agent.auxiliary_client._get_auxiliary_task_config",
+            return_value=task_config,
+        ):
+            resolved = _resolve_task_provider_model(task="compression")
+
+        provider, model, base_url, api_key, api_mode = resolved
+        assert provider == "auto"
+        assert model is None
+        assert base_url is None
+        assert api_key is None
+        assert api_mode is None
+
+    def test_yaml_null_compression_model_uses_live_parent_model(self):
+        parent_runtime = {
+            "provider": "custom",
+            "model": "gpt-live-parent",
+            "base_url": "https://parent.example/v1",
+            "api_key": "parent-key",
+        }
+        fake_client = MagicMock()
+        with patch(
+            "agent.auxiliary_client._get_auxiliary_task_config",
+            return_value={"provider": "auto", "model": None},
+        ), patch(
+            "agent.auxiliary_client._resolve_auto_route",
+            return_value=(fake_client, "gpt-live-parent", "custom"),
+        ) as resolve_auto:
+            client, model = get_text_auxiliary_client(
+                "compression",
+                main_runtime=parent_runtime,
+            )
+
+        assert client is fake_client
+        assert model == "gpt-live-parent"
+        resolve_auto.assert_called_once_with(
+            main_runtime=parent_runtime,
+            task=None,
+        )
+
     @pytest.mark.parametrize(
         "provider",
         [
