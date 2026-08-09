@@ -1153,6 +1153,12 @@ def build_turn_context(
     plugin_user_context = ""
     try:
         from hermes_cli.lifecycle import invoke_hook as _invoke_hook
+        try:
+            from tools.file_tools import _resolve_base_dir
+
+            _logical_cwd = str(_resolve_base_dir(effective_task_id))
+        except Exception:
+            _logical_cwd = None
         _pre_results = _invoke_hook(
             "pre_llm_call",
             session_id=agent.session_id,
@@ -1165,6 +1171,7 @@ def build_turn_context(
             platform=getattr(agent, "platform", None) or "",
             parent_session_id=getattr(agent, "_parent_session_id", None) or "",
             sender_id=getattr(agent, "_user_id", None) or "",
+            cwd=_logical_cwd,
         )
         _ctx_parts: list[str] = []
         # Spill oversized per-hook context to disk so a runaway plugin
