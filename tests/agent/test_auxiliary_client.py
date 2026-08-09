@@ -141,9 +141,9 @@ class TestResolveTaskProviderModel:
             "agent.auxiliary_client._get_auxiliary_task_config",
             return_value={"provider": "auto", "model": None},
         ), patch(
-            "agent.auxiliary_client._resolve_auto_route",
-            return_value=(fake_client, "gpt-live-parent", "custom"),
-        ) as resolve_auto:
+            "agent.auxiliary_client.resolve_provider_client",
+            return_value=(fake_client, "gpt-live-parent"),
+        ) as resolve_client:
             client, model = get_text_auxiliary_client(
                 "compression",
                 main_runtime=parent_runtime,
@@ -151,9 +151,13 @@ class TestResolveTaskProviderModel:
 
         assert client is fake_client
         assert model == "gpt-live-parent"
-        resolve_auto.assert_called_once_with(
+        resolve_client.assert_called_once_with(
+            "auto",
+            model=None,
+            explicit_base_url=None,
+            explicit_api_key=None,
+            api_mode=None,
             main_runtime=parent_runtime,
-            task=None,
         )
 
     @pytest.mark.parametrize(
