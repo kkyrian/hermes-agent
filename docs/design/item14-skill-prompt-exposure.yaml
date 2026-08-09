@@ -1,0 +1,97 @@
+# Settled Agent Observatory Item 14 cold-start policy.
+# This is a config fragment, not an instruction to delete installed packages.
+skills:
+  prompt_exposure:
+    default: name
+    hidden:
+      - claude-code
+      - codex
+      - dogfood
+      - github-auth
+      - github-code-review
+      - github-issues
+      - github-pr-workflow
+      - github-repo-management
+      - plan
+      - requesting-code-review
+      - stateful-control-plane-review
+    names_only:
+      - airtable
+      - apple-notes
+      - apple-reminders
+      - architecture-diagram
+      - arxiv
+      - ascii-art
+      - ascii-video
+      - baoyu-infographic
+      - blogwatcher
+      - claude-design
+      - comfyui
+      - computer-use
+      - consolidate-profile-skills
+      - design-md
+      - docx
+      - evaluating-llms-harness
+      - event-driven-service-agents
+      - excalidraw
+      - findmy
+      - gif-search
+      - google-workspace
+      - himalaya
+      - huggingface-hub
+      - humanizer
+      - imessage
+      - inspecting-hermes-desktop-dom
+      - llama-cpp
+      - llm-wiki
+      - long-running-service-lifecycle
+      - manim-video
+      - maps
+      - nano-pdf
+      - node-inspect-debugger
+      - notion
+      - obsidian
+      - ocr-and-documents
+      - openhue
+      - p5js
+      - pdf
+      - persistent-service-agent-continuity
+      - polymarket
+      - popular-web-designs
+      - powerpoint
+      - pretext
+      - python-debugpy
+      - research-paper-writing
+      - serving-llms-vllm
+      - sketch
+      - songsee
+      - songwriting-and-ai-music
+      - teams-meeting-pipeline
+      - touchdesigner-mcp
+      - weights-and-biases
+      - xlsx
+      - xurl
+      - youtube-content
+    descriptions:
+      - codebase-inspection
+      - grounded-citations
+      - hermes-agent
+      - hermes-agent-skill-authoring
+      - local-skill-fallback
+      - profile-scoped-tool-environments
+      - simplify-code
+      - spike
+      - stateful-operation-status-ux
+      - systematic-debugging
+      - test-driven-development
+    conditional:
+      opencode:
+        tier: description
+        requires_toolsets: [terminal]
+        requires_executables: [opencode]
+
+# Follow-up content migrations are intentionally outside prompt_exposure:
+# - planning-ledger-reconciliation: extract a smaller canonical workflow and
+#   remove dates, task IDs, user preferences, and incident residue.
+# - terminal-tui-input-transport: retain one specialist transport authority
+#   and remove duplicated transport fragments from sibling skills/instructions.
