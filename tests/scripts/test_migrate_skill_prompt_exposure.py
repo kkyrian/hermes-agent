@@ -1,6 +1,7 @@
 import importlib.util
 import json
 from pathlib import Path
+from unittest import mock
 
 import yaml
 
@@ -59,6 +60,26 @@ def test_apply_backup_and_rollback(tmp_path):
     MOD.rollback(manifest, apply=True, allow_live=False)
     assert config.read_text() == original
     assert json.loads(manifest.read_text())["backup_config"]
+
+
+def test_manifest_publication_failure_does_not_mutate_config(tmp_path):
+    home = tmp_path / "profile"
+    home.mkdir()
+    config = home / "config.yaml"
+    original = "model:\n  default: test\n"
+    config.write_text(original, encoding="utf-8")
+    policy = tmp_path / "policy.yaml"
+    _policy(policy)
+
+    with mock.patch.object(MOD, "_atomic_json_write", side_effect=OSError("disk full")):
+        try:
+            MOD.apply_policy(home, policy, apply=True, allow_live=False)
+        except OSError as error:
+            assert str(error) == "disk full"
+        else:
+            raise AssertionError("manifest failure was not propagated")
+
+    assert config.read_text(encoding="utf-8") == original
 
 
 def test_live_profile_requires_two_explicit_flags(monkeypatch, tmp_path):
