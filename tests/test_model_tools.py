@@ -60,6 +60,52 @@ class TestHandleFunctionCall:
         # pre_tool_call does NOT get duration_ms (nothing has run yet).
         assert "duration_ms" not in kwargs_by_hook["pre_tool_call"]
 
+    def test_post_tool_call_reports_authoritative_read_path_and_cwd(self, tmp_path, monkeypatch):
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        target = workspace / "nested" / "rules.md"
+        monkeypatch.setenv("TERMINAL_CWD", str(workspace))
+
+        with (
+            patch("model_tools.registry.dispatch", return_value='{"content":"ok"}'),
+            patch("hermes_cli.plugins.has_hook", return_value=True),
+            patch("hermes_cli.plugins.invoke_hook") as mock_invoke_hook,
+        ):
+            handle_function_call("read_file", {"path": "nested/rules.md"}, task_id="scope")
+
+        post_call = next(
+            call for call in mock_invoke_hook.call_args_list
+            if call.args[0] == "post_tool_call"
+        )
+        assert post_call.kwargs["resolved_paths"] == [str(target)]
+        assert post_call.kwargs["cwd"] == str(workspace)
+
+    def test_post_tool_call_prefers_landed_v4a_paths(self, tmp_path, monkeypatch):
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        first = workspace / "first.md"
+        second = workspace / "second.md"
+        monkeypatch.setenv("TERMINAL_CWD", str(workspace))
+        result = json.dumps({"files_modified": [str(first), str(second)]})
+
+        with (
+            patch("model_tools.registry.dispatch", return_value=result),
+            patch("hermes_cli.plugins.has_hook", return_value=True),
+            patch("hermes_cli.plugins.invoke_hook") as mock_invoke_hook,
+        ):
+            handle_function_call(
+                "patch",
+                {"mode": "patch", "patch": "*** Update File: decoy.md\n@@\n-old\n+new"},
+                task_id="scope",
+            )
+
+        post_call = next(
+            call for call in mock_invoke_hook.call_args_list
+            if call.args[0] == "post_tool_call"
+        )
+        assert post_call.kwargs["resolved_paths"] == [str(first), str(second)]
+        assert post_call.kwargs["cwd"] == str(workspace)
+
     def test_terminal_nonzero_exit_is_reported_as_error(self):
         result = json.dumps({"output": "", "exit_code": 1, "error": None})
         with (

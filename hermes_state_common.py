@@ -34,6 +34,18 @@ _PREVIEW_SCAFFOLD_WINDOW = 400
 _PREVIEW_MAX_CHARS = 60
 
 
+def escape_like(text: str) -> str:
+    """Escape SQL LIKE wildcards so operator/session-derived text matches
+    literally.  Pair with ``ESCAPE '\\'`` in the clause.
+
+    ``%`` and ``_`` are wildcards to LIKE, and ``_`` in particular is common
+    in the values these patterns run against (branch names, session titles,
+    filesystem paths).  A match documented as substring/prefix must not
+    silently widen.
+    """
+    return text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
 _PREVIEW_CONTENT_SQL = "REPLACE(REPLACE(m.content, X'0A', ' '), X'0D', ' ')"
 
 
@@ -230,6 +242,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     cost_source TEXT,
     pricing_version TEXT,
     title TEXT,
+    title_source TEXT,
     last_activity_at REAL,
     last_activity_description TEXT,
     last_activity_provenance TEXT,

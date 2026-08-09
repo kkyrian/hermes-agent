@@ -113,7 +113,7 @@ These hooks frame the user turn, not individual provider API attempts:
 
 Common `pre_llm_call` fields include `session_id`, `turn_id`,
 `user_message`, `conversation_history`, `is_first_turn`, `model`, `platform`,
-and `sender_id`.
+`sender_id`, and the absolute logical tool `cwd` when it can be resolved.
 
 Common `post_llm_call` fields include `session_id`, `turn_id`,
 `user_message`, `assistant_response`, `conversation_history`, `model`, and
@@ -174,7 +174,10 @@ Tool hooks describe individual tool calls:
 `tool_call_id`, `turn_id`, and `api_request_id`.
 
 `post_tool_call` includes the same identity fields plus `result`,
-`duration_ms`, `status`, `error_type`, and `error_message`.
+`duration_ms`, `status`, `error_type`, and `error_message`. Successful
+`read_file`, `write_file`, and `patch` calls also include the absolute logical
+tool `cwd` and authoritative `resolved_paths` for the target files. Multi-file
+patches report every landed path, including both endpoints of a move.
 
 `status` is the observer-grade lifecycle outcome. Common values include:
 
