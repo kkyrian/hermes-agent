@@ -191,7 +191,9 @@ def test_rich_reinjection_block_is_self_contained():
     text = format_process_notification(evt)
     assert text is not None
     for needle in [
-        "ASYNC DELEGATION COMPLETE",
+        "HERMES INTERNAL EVENT — SUBAGENT RESULT — NOT USER INPUT",
+        "Hermes generated this event",
+        "not as a new user request",
         "Compute the meaning of life",
         "User is a philosopher",
         "Toolsets: web",
@@ -620,6 +622,9 @@ def test_delegate_task_background_routes_async_and_does_not_block(monkeypatch):
     assert evt["results"][0]["summary"] == "done: the real task"
     text = format_process_notification(evt)
     assert text is not None
+    assert text.startswith(
+        "[HERMES INTERNAL EVENT — SUBAGENT RESULT — NOT USER INPUT — BATCH"
+    )
     assert "the real task" in text
 
 
@@ -747,7 +752,9 @@ def test_gateway_formatter_renders_async_block():
 
     txt = _format_gateway_process_notification(_make_async_evt())
     assert txt is not None
-    assert "ASYNC DELEGATION COMPLETE" in txt
+    assert txt.startswith(
+        "[HERMES INTERNAL EVENT — SUBAGENT RESULT — NOT USER INPUT"
+    )
     assert "Found the bug in test_foo" in txt
     assert "Investigate flaky test" in txt
 
@@ -760,4 +767,3 @@ def test_gateway_cli_origin_event_left_unrouted():
     evt = _make_async_evt(session_key="")
     runner._enrich_async_delegation_routing(evt)
     assert "platform" not in evt
-
