@@ -922,6 +922,143 @@ class TestBuildSkillsSystemPromptConditional:
         assert "duckduckgo" in result
 
 
+class TestSkillPromptExposure:
+    @pytest.fixture(autouse=True)
+    def _clear_skills_cache(self):
+        from agent.prompt_builder import clear_skills_system_prompt_cache
+        clear_skills_system_prompt_cache(clear_snapshot=True)
+        yield
+        clear_skills_system_prompt_cache(clear_snapshot=True)
+
+    @staticmethod
+    def _write_skill(home, name, description):
+        skill_dir = home / "skills" / "test" / name
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(
+            f"---\nname: {name}\ndescription: {description}\n---\n# {name}\nFull body\n"
+        )
+
+    def test_hidden_name_only_and_description_tiers(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        self._write_skill(tmp_path, "hidden-skill", "Hidden description")
+        self._write_skill(tmp_path, "named-skill", "Named description")
+        self._write_skill(tmp_path, "described-skill", "Retained description")
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config_readonly",
+            lambda: {"skills": {"prompt_exposure": {
+                "hidden": ["hidden-skill"],
+                "names_only": ["named-skill"],
+                "descriptions": ["described-skill"],
+            }}},
+        )
+
+        result = build_skills_system_prompt()
+
+        assert "hidden-skill" not in result
+        assert "    - named-skill\n" in result
+        assert "Named description" not in result
+        assert "    - described-skill: Retained description" in result
+
+    def test_unknown_skill_uses_configured_default(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        self._write_skill(tmp_path, "future-skill", "Future description")
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config_readonly",
+            lambda: {"skills": {"prompt_exposure": {"default": "name"}}},
+        )
+        result = build_skills_system_prompt()
+        assert "    - future-skill\n" in result
+        assert "Future description" not in result
+
+    def test_duplicate_membership_fails_closed(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        self._write_skill(tmp_path, "ambiguous", "Do not expose")
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config_readonly",
+            lambda: {"skills": {"prompt_exposure": {
+                "names_only": ["ambiguous"],
+                "descriptions": ["ambiguous"],
+            }}},
+        )
+        assert "ambiguous" not in build_skills_system_prompt()
+
+    def test_conditional_requires_authorized_toolset_and_executable(
+        self, monkeypatch, tmp_path
+    ):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        self._write_skill(tmp_path, "opencode", "Delegate to OpenCode")
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config_readonly",
+            lambda: {"skills": {"prompt_exposure": {"conditional": {
+                "opencode": {
+                    "tier": "description",
+                    "requires_toolsets": ["terminal"],
+                    "requires_executables": ["opencode"],
+                }
+            }}}},
+        )
+        monkeypatch.setattr("agent.prompt_builder.shutil.which", lambda _name: "/bin/opencode")
+
+        assert "opencode" not in build_skills_system_prompt(available_toolsets=set())
+        assert "opencode: Delegate to OpenCode" in build_skills_system_prompt(
+            available_toolsets={"terminal"}
+        )
+
+    def test_conditional_executable_fails_closed_for_remote_terminal(
+        self, monkeypatch, tmp_path
+    ):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("TERMINAL_ENV", "docker")
+        self._write_skill(tmp_path, "opencode", "Delegate to OpenCode")
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config_readonly",
+            lambda: {"skills": {"prompt_exposure": {"conditional": {
+                "opencode": {
+                    "tier": "description",
+                    "requires_toolsets": ["terminal"],
+                    "requires_executables": ["opencode"],
+                }
+            }}}},
+        )
+        monkeypatch.setattr("agent.prompt_builder.shutil.which", lambda _name: "/bin/opencode")
+        assert "opencode" not in build_skills_system_prompt(
+            available_toolsets={"terminal"}
+        )
+
+    def test_policy_is_part_of_prompt_cache_key(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        self._write_skill(tmp_path, "cached-skill", "Cached description")
+        policy = {"skills": {"prompt_exposure": {"default": "name"}}}
+        monkeypatch.setattr("hermes_cli.config.load_config_readonly", lambda: policy)
+        first = build_skills_system_prompt()
+        policy["skills"]["prompt_exposure"]["default"] = "description"
+        second = build_skills_system_prompt()
+        assert "Cached description" not in first
+        assert "Cached description" in second
+
+    def test_prompt_policy_does_not_filter_discovery_or_body_loading(
+        self, monkeypatch, tmp_path
+    ):
+        import json
+        import tools.skills_tool as skills_tool
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        self._write_skill(tmp_path, "prompt-hidden", "Still discoverable")
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config_readonly",
+            lambda: {"skills": {"prompt_exposure": {"hidden": ["prompt-hidden"]}}},
+        )
+        skills_tool._SKILLS_CACHE.clear()
+
+        assert "prompt-hidden" not in build_skills_system_prompt()
+        listing = json.loads(skills_tool.skills_list())
+        entry = next(s for s in listing["skills"] if s["name"] == "prompt-hidden")
+        assert entry["description"] == "Still discoverable"
+        viewed = json.loads(skills_tool.skill_view("prompt-hidden"))
+        assert viewed["success"] is True
+        assert "# prompt-hidden\nFull body" in viewed["content"]
+
+
 
 
 # =========================================================================
@@ -985,5 +1122,3 @@ class TestParallelToolCallGuidance:
 # =========================================================================
 # Budget warning history stripping
 # =========================================================================
-
-
