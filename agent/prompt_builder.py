@@ -7,6 +7,7 @@ assemble pieces, then combines them with memory and ephemeral prompts.
 import json
 import logging
 import os
+import shutil
 import sys
 import threading
 import contextvars
@@ -1595,6 +1596,118 @@ _SKILLS_PROMPT_CACHE_LOCK = threading.Lock()
 # org-shared skills; older snapshots are discarded and rebuilt.
 _SKILLS_SNAPSHOT_VERSION = 2
 
+_SKILL_EXPOSURE_TIERS = frozenset({"description", "name", "hidden"})
+
+
+def _load_skill_prompt_exposure_policy() -> tuple[dict, tuple]:
+    """Return normalized prompt-only skill exposure policy + cache fingerprint."""
+    try:
+        from hermes_cli.config import load_config_readonly
+
+        raw = ((load_config_readonly().get("skills") or {}).get("prompt_exposure") or {})
+    except Exception:
+        logger.debug("Could not load skills.prompt_exposure", exc_info=True)
+        raw = {}
+    if not isinstance(raw, dict):
+        raw = {}
+
+    default = str(raw.get("default") or "description").strip().lower()
+    if default not in _SKILL_EXPOSURE_TIERS:
+        logger.warning("Invalid skills.prompt_exposure.default=%r; using description", default)
+        default = "description"
+
+    memberships: dict[str, set[str]] = {}
+    for key, tier in (("hidden", "hidden"), ("names_only", "name"), ("descriptions", "description")):
+        values = raw.get(key) or []
+        if isinstance(values, str):
+            values = [values]
+        if not isinstance(values, (list, tuple, set)):
+            continue
+        for value in values:
+            name = str(value).strip()
+            if name:
+                memberships.setdefault(name, set()).add(tier)
+
+    tiers: dict[str, str] = {}
+    for name, declared in memberships.items():
+        if len(declared) > 1:
+            logger.warning(
+                "Skill %s appears in multiple prompt exposure tiers %s; hiding it",
+                name,
+                sorted(declared),
+            )
+            tiers[name] = "hidden"
+        else:
+            tiers[name] = next(iter(declared))
+
+    conditional: dict[str, dict] = {}
+    raw_conditional = raw.get("conditional") or {}
+    if isinstance(raw_conditional, dict):
+        for raw_name, spec in raw_conditional.items():
+            name = str(raw_name).strip()
+            if not name or not isinstance(spec, dict):
+                continue
+            tier = str(spec.get("tier") or tiers.get(name) or default).strip().lower()
+            if tier not in _SKILL_EXPOSURE_TIERS:
+                tier = "hidden"
+            toolsets = spec.get("requires_toolsets") or []
+            executables = spec.get("requires_executables") or []
+            if isinstance(toolsets, str):
+                toolsets = [toolsets]
+            if isinstance(executables, str):
+                executables = [executables]
+            conditional[name] = {
+                "tier": tier,
+                "requires_toolsets": sorted({str(x).strip() for x in toolsets if str(x).strip()}),
+                "requires_executables": sorted({str(x).strip() for x in executables if str(x).strip()}),
+            }
+
+    policy = {"default": default, "tiers": tiers, "conditional": conditional}
+    executable_state = tuple(
+        sorted(
+            (exe, bool(shutil.which(exe)))
+            for spec in conditional.values()
+            for exe in spec["requires_executables"]
+        )
+    )
+    fingerprint = (
+        default,
+        tuple(sorted(tiers.items())),
+        tuple(
+            (name, spec["tier"], tuple(spec["requires_toolsets"]), tuple(spec["requires_executables"]))
+            for name, spec in sorted(conditional.items())
+        ),
+        executable_state,
+        (os.environ.get("TERMINAL_ENV") or "local").strip().lower(),
+    )
+    return policy, fingerprint
+
+
+def _skill_prompt_exposure(
+    name: str,
+    policy: dict,
+    available_toolsets: "set[str] | None",
+) -> str:
+    """Resolve description/name/hidden for one cold-start index entry."""
+    conditional = policy["conditional"].get(name)
+    if conditional is not None:
+        active_toolsets = available_toolsets or set()
+        if any(ts not in active_toolsets for ts in conditional["requires_toolsets"]):
+            return "hidden"
+        # ``which`` describes the Hermes host, not a remote terminal backend.
+        # Fail closed there rather than advertising a host binary the agent
+        # cannot invoke inside Docker/SSH/Modal/etc.
+        terminal_env = (os.environ.get("TERMINAL_ENV") or "local").strip().lower()
+        if conditional["requires_executables"] and terminal_env in _REMOTE_TERMINAL_BACKENDS:
+            return "hidden"
+        if any(
+            shutil.which(exe) is None
+            for exe in conditional["requires_executables"]
+        ):
+            return "hidden"
+        return conditional["tier"]
+    return policy["tiers"].get(name, policy["default"])
+
 
 def _skills_prompt_snapshot_path() -> Path:
     return get_hermes_home() / ".skills_prompt_snapshot.json"
@@ -1902,6 +2015,7 @@ def _build_skills_system_prompt_inner(
     _platform_hint = _current_session_platform_hint()
     disabled = get_disabled_skill_names(_platform_hint or None)
     project_dirs = project_dirs or []
+    exposure_policy, exposure_fingerprint = _load_skill_prompt_exposure_policy()
     cache_key = (
         str(skills_dir),
         tuple(str(d) for d in external_dirs),
@@ -1911,6 +2025,7 @@ def _build_skills_system_prompt_inner(
         _platform_hint,
         tuple(sorted(disabled)),
         tuple(sorted(compact_categories or ())),
+        exposure_fingerprint,
     )
     with _SKILLS_PROMPT_CACHE_LOCK:
         cached = _SKILLS_PROMPT_CACHE.get(cache_key)
@@ -2031,7 +2146,12 @@ def _build_skills_system_prompt_inner(
         name_owners.setdefault(fm, set()).add(kind)
     for entry in visible_entries:
         fm = entry.get("frontmatter_name") or entry.get("skill_name") or ""
+        exposure = _skill_prompt_exposure(fm, exposure_policy, available_toolsets)
+        if exposure == "hidden":
+            continue
         desc = entry.get("description", "")
+        if exposure == "name":
+            desc = ""
         org_id = entry.get("org_id")
         collided = len(name_owners.get(fm, set())) > 1
         if org_id:
@@ -2098,9 +2218,17 @@ def _build_skills_system_prompt_inner(
                     available_toolsets,
                 ):
                     continue
+                exposure = _skill_prompt_exposure(
+                    frontmatter_name, exposure_policy, available_toolsets
+                )
+                if exposure == "hidden":
+                    continue
                 seen_skill_names.add(frontmatter_name)
                 skills_by_category.setdefault(entry["category"], []).append(
-                    (frontmatter_name, entry["description"])
+                    (
+                        frontmatter_name,
+                        entry["description"] if exposure == "description" else "",
+                    )
                 )
             except Exception as e:
                 logger.debug("Error reading external skill %s: %s", skill_file, e)
