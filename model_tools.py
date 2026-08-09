@@ -1103,6 +1103,56 @@ def _tool_result_observer_fields(
     return "ok", None, None
 
 
+def _post_tool_call_file_metadata(
+    function_name: str,
+    function_args: Dict[str, Any],
+    result: Any,
+    *,
+    task_id: Optional[str],
+    status: str,
+) -> tuple[Optional[List[str]], Optional[str]]:
+    """Return host-authoritative file paths and cwd for file-tool hooks."""
+    if function_name not in {"read_file", "write_file", "patch"} or status == "error":
+        return None, None
+
+    try:
+        from tools.file_tools import _resolve_base_dir, _resolve_path_for_task
+
+        effective_task_id = task_id or "default"
+        cwd = str(_resolve_base_dir(effective_task_id))
+        resolved_paths: List[str] = []
+
+        if function_name in {"write_file", "patch"} and isinstance(result, str):
+            try:
+                parsed_result = json.loads(result)
+            except (TypeError, ValueError):
+                parsed_result = None
+            if isinstance(parsed_result, dict):
+                files_modified = parsed_result.get("files_modified")
+                if isinstance(files_modified, list):
+                    resolved_paths.extend(str(path) for path in files_modified if path)
+                elif parsed_result.get("resolved_path"):
+                    resolved_paths.append(str(parsed_result["resolved_path"]))
+
+        if not resolved_paths:
+            if function_name == "read_file":
+                raw_paths = [function_args.get("path")]
+            else:
+                from agent.tool_dispatch_helpers import _extract_file_mutation_targets
+
+                raw_paths = _extract_file_mutation_targets(function_name, function_args)
+            resolved_paths = [
+                str(_resolve_path_for_task(str(path), effective_task_id))
+                for path in raw_paths
+                if path
+            ]
+
+        return list(dict.fromkeys(resolved_paths)), cwd
+    except Exception as exc:
+        logger.debug("post_tool_call file metadata resolution failed: %s", exc)
+        return None, None
+
+
 def _emit_post_tool_call_hook(
     *,
     function_name: str,
@@ -1137,6 +1187,13 @@ def _emit_post_tool_call_hook(
                 function_name,
                 result,
             )
+        resolved_paths, cwd = _post_tool_call_file_metadata(
+            function_name,
+            function_args,
+            result,
+            task_id=task_id,
+            status=status,
+        )
         invoke_hook(
             "post_tool_call",
             tool_name=function_name,
@@ -1152,6 +1209,8 @@ def _emit_post_tool_call_hook(
             error_type=error_type,
             error_message=error_message,
             middleware_trace=list(middleware_trace or []),
+            resolved_paths=resolved_paths,
+            cwd=cwd,
         )
     except Exception as _hook_err:
         logger.debug("post_tool_call hook error: %s", _hook_err)

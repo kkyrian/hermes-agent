@@ -136,13 +136,15 @@ _DEFAULT_PAYLOADS = {
         "tool_call_id": "test-call",
     },
     "post_tool_call": {
-        "tool_name": "terminal",
-        "args": {"command": "echo hello"},
+        "tool_name": "read_file",
+        "args": {"path": "README.md"},
         "session_id": "test-session",
         "task_id": "test-task",
         "tool_call_id": "test-call",
-        "result": '{"output": "hello"}',
+        "result": '{"content": "hello"}',
         "duration_ms": 42,
+        "resolved_paths": ["/workspace/README.md"],
+        "cwd": "/workspace",
     },
     "pre_llm_call": {
         "session_id": "test-session",
@@ -151,6 +153,7 @@ _DEFAULT_PAYLOADS = {
         "is_first_turn": True,
         "model": "gpt-4",
         "platform": "cli",
+        "cwd": "/workspace",
     },
     "post_llm_call": {
         "session_id": "test-session",
