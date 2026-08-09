@@ -1843,6 +1843,18 @@ DEFAULT_CONFIG = {
     # always goes to ~/.hermes/skills/.
     "skills": {
         "external_dirs": [],   # e.g. ["~/.agents/skills", "/shared/team-skills"]
+        # Prompt-only exposure policy. Installed packages remain discoverable
+        # through skills_list and fully loadable through skill_view.
+        "prompt_exposure": {
+            "default": "description",  # description | name | hidden
+            "hidden": [],
+            "names_only": [],
+            "descriptions": [],
+            # Additional offer-time gates keyed by skill name. Listing a skill
+            # here is explicit authority to advertise it when every declared
+            # prerequisite is available; explicit skill_view remains possible.
+            "conditional": {},
+        },
         # Substitute ${HERMES_SKILL_DIR} and ${HERMES_SESSION_ID} in SKILL.md
         # content with the absolute skill directory and the active session id
         # before the agent sees it.  Lets skill authors reference bundled
