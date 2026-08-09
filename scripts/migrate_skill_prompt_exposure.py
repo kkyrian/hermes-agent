@@ -58,6 +58,29 @@ def _atomic_copy(source: Path, destination: Path) -> None:
         raise
 
 
+def _atomic_json_write(path: Path, value: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(value, handle, indent=2, sort_keys=True)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp_name, path)
+        directory_fd = os.open(path.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
+    except Exception:
+        try:
+            os.unlink(tmp_name)
+        except OSError:
+            pass
+        raise
+
+
 def _is_live_profile(home: Path) -> bool:
     try:
         home.resolve().relative_to(LIVE_PROFILE_ROOT.resolve())
@@ -113,21 +136,20 @@ def apply_policy(home: Path, fragment: Path, *, apply: bool, allow_live: bool) -
     else:
         backup_config.write_text("", encoding="utf-8")
 
-    updated = dict(config)
-    skills = dict(updated.get("skills") or {})
-    skills["prompt_exposure"] = policy
-    updated["skills"] = skills
-    _atomic_yaml_write(config_path, updated)
-
     manifest = {
         **report,
         "backup_config": str(backup_config),
         "config_existed": config_existed,
     }
     manifest_path = backup_dir / "manifest.json"
-    manifest_path.write_text(
-        json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8"
-    )
+    _atomic_json_write(manifest_path, manifest)
+
+    updated = dict(config)
+    skills = dict(updated.get("skills") or {})
+    skills["prompt_exposure"] = policy
+    updated["skills"] = skills
+    _atomic_yaml_write(config_path, updated)
+
     report["manifest"] = str(manifest_path)
     return report
 
