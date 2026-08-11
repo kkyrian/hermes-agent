@@ -1,8 +1,8 @@
-"""Regression test: internal synthetic events must never interrupt a busy session.
+"""Regression tests for internal synthetic events in a busy session.
 
-Reported by @Heeervas (June 2026): an ``async_delegation`` completion from a
-``delegate_task(background=true)`` subagent re-enters the originating gateway
-session as an internal ``MessageEvent``. When that session was busy running a
+Reported by @Heeervas (June 2026): a completed asynchronous ``delegate_task``
+re-enters the originating gateway session as an internal ``MessageEvent``.
+When that session was busy running a
 turn, the completion was treated exactly like a user TEXT message and hit the
 default ``busy_input_mode='interrupt'`` path — calling
 ``running_agent.interrupt()`` and aborting the active turn, plus sending a
@@ -10,12 +10,10 @@ default ``busy_input_mode='interrupt'`` path — calling
 completions (terminal ``notify_on_complete``), which also re-enter as internal
 events.
 
-The fix: ``_handle_active_session_busy_message`` returns ``False`` early for any
-event with ``internal=True``, so the base adapter queues it silently (no
-interrupt, no ack) and it cascades as a new turn after the current one finishes.
-This preserves strict message-role alternation and the design invariant that a
-completion surfaces as a NEW turn only when idle, never spliced into a running
-turn.
+Generic internal events remain silently queued.  Subagent completions are a
+separate typed case: the active parent accepts them into its internal-event
+mailbox so they are visible at the next safe model boundary without interrupting
+the current request or replaying as a second next-turn message.
 """
 
 from __future__ import annotations
@@ -45,7 +43,14 @@ from gateway.platforms.base import (  # noqa: E402
     SessionSource,
     build_session_key,
 )
-from gateway.run import GatewayRunner  # noqa: E402
+from gateway.run import (  # noqa: E402
+    GatewayRunner,
+    _dequeue_typed_internal_followup,
+    _merge_agent_undelivered_internal_events,
+    _pending_internal_event_from_result,
+    _queue_typed_internal_followup,
+)
+from run_agent import AIAgent  # noqa: E402
 
 
 def _make_internal_event(text: str = "[async delegation completed]") -> MessageEvent:
@@ -101,6 +106,7 @@ def _make_running_parent() -> MagicMock:
         "max_iterations": 60,
         "current_tool": "terminal",
     }
+    parent.enqueue_internal_event.return_value = True
     return parent
 
 
@@ -125,5 +131,162 @@ async def test_internal_event_does_not_interrupt_busy_session() -> None:
     parent.interrupt.assert_not_called()
     # No "⚡ Interrupting current task" (or any) ack for a synthetic event.
     adapter._send_with_retry.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_subagent_completion_enters_busy_parent_mailbox() -> None:
+    """A typed subagent completion is admitted once without a user-facing ack."""
+    runner = _make_runner()
+    runner._busy_input_mode = "interrupt"
+    adapter = _make_adapter()
+    event = _make_internal_event("A delegated child finished.")
+    event.metadata["internal_event_kind"] = "subagent_completion"
+    event.metadata["delegation_id"] = "deleg_123"
+    sk = build_session_key(event.source)
+    parent = _make_running_parent()
+    parent._active_children = ["still-running-sibling"]
+    runner._running_agents[sk] = parent
+    runner.adapters[event.source.platform] = adapter
+
+    handled = await runner._handle_active_session_busy_message(event, sk)
+
+    assert handled is True
+    parent.enqueue_internal_event.assert_called_once_with(event.text)
+    parent.interrupt.assert_not_called()
+    adapter._send_with_retry.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_rejected_subagent_admission_uses_separate_typed_followup_queue() -> None:
+    runner = _make_runner()
+    runner._busy_input_mode = "interrupt"
+    adapter = _make_adapter()
+    event = _make_internal_event("completion after final boundary")
+    event.metadata["internal_event_kind"] = "subagent_completion"
+    sk = build_session_key(event.source)
+    parent = _make_running_parent()
+    parent.enqueue_internal_event.return_value = False
+    runner._running_agents[sk] = parent
+    runner.adapters[event.source.platform] = adapter
+
+    assert await runner._handle_active_session_busy_message(event, sk) is True
+    assert adapter._pending_messages == {}
+    assert _dequeue_typed_internal_followup(runner, sk) is event
+    adapter._send_with_retry.assert_not_called()
+
+
+def test_typed_internal_followup_never_merges_with_pending_user_event() -> None:
+    runner = _make_runner()
+    internal = _make_internal_event("completion evidence")
+    user = _make_internal_event("owner follow-up")
+    user.internal = False
+    sk = build_session_key(internal.source)
+    adapter = _make_adapter()
+    adapter._pending_messages[sk] = user
+
+    _queue_typed_internal_followup(runner, sk, internal)
+
+    assert adapter._pending_messages[sk] is user
+    assert adapter._pending_messages[sk].text == "owner follow-up"
+    assert _dequeue_typed_internal_followup(runner, sk) is internal
+
+
+@pytest.mark.asyncio
+async def test_pr007_ordering_reaches_long_parent_before_next_model_decision() -> None:
+    """Replay the incident ordering through gateway admission and model boundary."""
+    runner = _make_runner()
+    runner._busy_input_mode = "interrupt"
+    adapter = _make_adapter()
+    event = _make_internal_event(
+        "[HERMES INTERNAL EVENT — SUBAGENT RESULT — NOT USER INPUT — deleg_pr007]\n"
+        "Review found a blocker before the parent closeout."
+    )
+    event.metadata["internal_event_kind"] = "subagent_completion"
+    sk = build_session_key(event.source)
+    parent = object.__new__(AIAgent)
+    setattr(parent, "_pending_internal_events", [])
+    setattr(parent, "_pending_internal_events_lock", threading.Lock())
+    setattr(parent, "_internal_event_mailbox_open", False)
+    parent._open_internal_event_mailbox()
+    runner._running_agents[sk] = parent
+    runner.adapters[event.source.platform] = adapter
+
+    assert await runner._handle_active_session_busy_message(event, sk) is True
+    messages = [
+        {"role": "assistant", "tool_calls": [{"id": "long-step"}]},
+        {
+            "role": "tool",
+            "tool_call_id": "long-step",
+            "content": "long parent step complete",
+        },
+    ]
+    parent._apply_pending_internal_events_to_tool_results(messages, 1)
+
+    assert messages[-1]["content"].count("Review found a blocker") == 1
+    assert parent._take_internal_events_at_boundary() == []
+    adapter._send_with_retry.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_async_delegation_watcher_sets_structured_internal_event_kind() -> None:
+    runner = _make_runner()
+    adapter = _make_adapter()
+    adapter.handle_message = AsyncMock()
+    platform = MagicMock(value="telegram")
+    runner.adapters[platform] = adapter
+    event = {
+        "type": "async_delegation",
+        "delegation_id": "deleg_typed",
+        "platform": "telegram",
+        "chat_id": "123",
+        "chat_type": "private",
+        "user_id": "user1",
+    }
+
+    assert await runner._inject_watch_notification("completion evidence", event) is True
+    injected = adapter.handle_message.await_args.args[0]
+    assert injected.internal is True
+    assert injected.metadata["internal_event_kind"] == "subagent_completion"
+    assert injected.metadata["delegation_id"] == "deleg_typed"
+
+
+def test_abnormal_turn_leftover_keeps_typed_internal_idle_delivery() -> None:
+    source = _make_internal_event().source
+
+    event = _pending_internal_event_from_result(
+        {
+            "pending_internal_events": [
+                "[HERMES INTERNAL EVENT — SUBAGENT RESULT — NOT USER INPUT] one",
+                "[HERMES INTERNAL EVENT — SUBAGENT RESULT — NOT USER INPUT] two",
+            ]
+        },
+        source,
+    )
+
+    assert event is not None
+    assert event.internal is True
+    assert event.source is source
+    assert event.text.count("SUBAGENT RESULT") == 2
+    assert event.metadata["internal_event_kind"] == "subagent_completion"
+    assert event.metadata["delivery"] == "turn_finalize_fallback"
+
+
+def test_gateway_harvests_exception_path_internal_events() -> None:
+    agent = object.__new__(AIAgent)
+    setattr(agent, "_pending_internal_events", [])
+    setattr(agent, "_pending_internal_events_lock", threading.Lock())
+    setattr(agent, "_internal_event_mailbox_open", False)
+    setattr(
+        agent,
+        "_undelivered_internal_events_after_turn",
+        ["completion preserved across exception"],
+    )
+
+    result = _merge_agent_undelivered_internal_events(None, agent)
+
+    assert result["pending_internal_events"] == [
+        "completion preserved across exception"
+    ]
+    assert agent._take_undelivered_internal_events_after_turn() == []
 
 

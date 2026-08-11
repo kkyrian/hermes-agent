@@ -410,6 +410,178 @@ def _ra():
     return run_agent
 
 
+def _inject_pending_internal_events_before_stop(
+    agent,
+    messages: list,
+    final_msg: dict,
+) -> bool:
+    """Turn pending subagent completions into one same-turn model boundary."""
+    events = agent._take_internal_events_at_boundary(close_if_empty=True)
+    if not events:
+        return False
+
+    payload = "\n\n".join(events)
+    steer = agent._drain_pending_steer()
+    if steer:
+        from agent.prompt_builder import format_steer_marker
+
+        payload += format_steer_marker(steer)
+
+    final_msg["finish_reason"] = "internal_event_followup"
+    final_msg["_internal_event_followup"] = True
+    final_msg["display_kind"] = "hidden"
+    messages.append(final_msg)
+    messages.append(
+        {
+            "role": "user",
+            "content": payload,
+            "_internal_event_synthetic": True,
+            "display_kind": "hidden",
+        }
+    )
+    agent._session_messages = messages
+    # Give the completion evidence one model decision if the attempted stop
+    # consumed the ordinary turn budget. Otherwise the normal next iteration
+    # accounts for the follow-up.
+    _iteration_budget = getattr(agent, "iteration_budget", None)
+    _budget_exhausted = (
+        getattr(agent, "_api_call_count", 0) >= getattr(agent, "max_iterations", 0)
+        or getattr(_iteration_budget, "remaining", 1) <= 0
+    )
+    if _budget_exhausted:
+        agent._budget_grace_call = True
+    logger.info(
+        "Queued %d subagent completion event(s) at the active-turn final boundary",
+        len(events),
+    )
+    return True
+
+
+def _inject_pending_internal_events_pre_api(agent, messages: list) -> bool:
+    """Drain completions that race after a tool/final boundary but before sampling."""
+    events = agent._take_internal_events_at_boundary()
+    if not events:
+        return False
+
+    target = messages[-1] if messages and isinstance(messages[-1], dict) else None
+    if not (
+        target
+        and (
+            target.get("role") == "tool"
+            or target.get("_internal_event_synthetic")
+        )
+    ):
+        lock = getattr(agent, "_pending_internal_events_lock", None)
+        pending = getattr(agent, "_pending_internal_events", None)
+        if lock is not None and isinstance(pending, list):
+            with lock:
+                pending[:0] = events
+        return False
+
+    payload = "\n\n".join(events)
+    steer = agent._drain_pending_steer()
+    if steer:
+        from agent.prompt_builder import format_steer_marker
+
+        payload += format_steer_marker(steer)
+    if target.get("_internal_event_synthetic"):
+        messages.append(
+            {
+                "role": "assistant",
+                "content": (
+                    "[HERMES INTERNAL CONTEXT CONTINUATION — NOT USER INPUT]"
+                ),
+                "_internal_event_synthetic": True,
+                "display_kind": "hidden",
+            }
+        )
+    messages.append(
+        {
+            "role": "user",
+            "content": payload,
+            "_internal_event_synthetic": True,
+            "display_kind": "hidden",
+        }
+    )
+
+    agent._session_messages = messages
+    logger.info(
+        "Delivered %d subagent completion event(s) at pre-API boundary",
+        len(events),
+    )
+    return True
+
+
+def _inject_pending_steer_pre_api(
+    agent,
+    messages: list,
+    *,
+    conversation_history=None,
+) -> bool:
+    """Place one late owner steer after any already-appended internal evidence."""
+    steer = agent._drain_pending_steer()
+    if not steer:
+        return False
+
+    from agent.prompt_builder import format_steer_marker
+
+    marker = format_steer_marker(steer)
+    tail = messages[-1] if messages and isinstance(messages[-1], dict) else None
+    if tail and tail.get("_internal_event_synthetic"):
+        messages.extend(
+            [
+                {
+                    "role": "assistant",
+                    "content": "[HERMES USER STEER CONTINUATION]",
+                    "_internal_event_synthetic": True,
+                    "display_kind": "hidden",
+                },
+                {
+                    "role": "user",
+                    "content": marker,
+                    "_internal_event_synthetic": True,
+                    "display_kind": "hidden",
+                },
+            ]
+        )
+        agent._session_messages = messages
+        if conversation_history is not None:
+            agent._persist_session(messages, conversation_history)
+        return True
+
+    for index in range(len(messages) - 1, -1, -1):
+        message = messages[index]
+        if not isinstance(message, dict) or message.get("role") != "tool":
+            continue
+        existing = message.get("content", "")
+        if isinstance(existing, str):
+            message["content"] = existing + marker
+        else:
+            try:
+                blocks = list(existing) if existing else []
+                blocks.append({"type": "text", "text": marker})
+                message["content"] = blocks
+            except Exception:
+                break
+        logger.debug(
+            "Pre-API-call steer drain: injected into tool msg at index %d",
+            index,
+        )
+        return True
+
+    lock = getattr(agent, "_pending_steer_lock", None)
+    if lock is not None:
+        with lock:
+            if agent._pending_steer:
+                agent._pending_steer = agent._pending_steer + "\n" + steer
+            else:
+                agent._pending_steer = steer
+    else:
+        existing = getattr(agent, "_pending_steer", None)
+        agent._pending_steer = (existing + "\n" + steer) if existing else steer
+    return False
+
+
 def _nous_entitlement_message(capability: str) -> str:
     try:
         from hermes_cli.nous_account import (
@@ -1631,6 +1803,7 @@ def run_conversation(
             should_review_memory=_should_review_memory,
         )
 
+    agent._open_internal_event_mailbox()
     while (api_call_count < agent.max_iterations and agent.iteration_budget.remaining > 0) or agent._budget_grace_call:
         _redirect_text = agent._drain_pending_redirect()
         if _redirect_text:
@@ -1702,6 +1875,13 @@ def run_conversation(
                 and "skill_manage" in agent.valid_tool_names):
             agent._iters_since_skill += 1
         
+        # ── Pre-API-call internal-event drain ─────────────────────────
+        # A completion can race after the previous tool/final boundary but
+        # before this sample. Merge it into the existing internal context (or
+        # latest tool result) once, before the higher-authority user steer.
+        if _inject_pending_internal_events_pre_api(agent, messages):
+            agent._persist_session(messages, conversation_history)
+
         # ── Pre-API-call /steer drain ──────────────────────────────────
         # If a /steer arrived during the previous API call (while the model
         # was thinking), drain it now — before we build api_messages — so
@@ -1709,49 +1889,16 @@ def run_conversation(
         # steers sent during an API call only land after the NEXT tool batch,
         # which may never come if the model returns a final response.
         #
-        # We scan backwards for the last tool-role message in the messages
-        # list.  If found, the steer is appended there.  If not (first
-        # iteration, no tools yet), the steer stays pending for the next
-        # tool batch — injecting into a user message would break role
-        # alternation, and there's no tool output to piggyback on.
-        _pre_api_steer = agent._drain_pending_steer()
-        if _pre_api_steer:
-            _injected = False
-            for _si in range(len(messages) - 1, -1, -1):
-                _sm = messages[_si]
-                if isinstance(_sm, dict) and _sm.get("role") == "tool":
-                    from agent.prompt_builder import format_steer_marker
-                    marker = format_steer_marker(_pre_api_steer)
-                    existing = _sm.get("content", "")
-                    if isinstance(existing, str):
-                        _sm["content"] = existing + marker
-                    else:
-                        # Multimodal content blocks — append text block
-                        try:
-                            blocks = list(existing) if existing else []
-                            blocks.append({"type": "text", "text": marker})
-                            _sm["content"] = blocks
-                        except Exception:
-                            pass
-                    _injected = True
-                    logger.debug(
-                        "Pre-API-call steer drain: injected into tool msg at index %d",
-                        _si,
-                    )
-                    break
-            if not _injected:
-                # No tool message to inject into — put it back so
-                # the post-tool-execution drain picks it up later.
-                _lock = getattr(agent, "_pending_steer_lock", None)
-                if _lock is not None:
-                    with _lock:
-                        if agent._pending_steer:
-                            agent._pending_steer = agent._pending_steer + "\n" + _pre_api_steer
-                        else:
-                            agent._pending_steer = _pre_api_steer
-                else:
-                    existing = getattr(agent, "_pending_steer", None)
-                    agent._pending_steer = (existing + "\n" + _pre_api_steer) if existing else _pre_api_steer
+        # A steer racing with hidden runtime-internal evidence is appended in a
+        # later hidden user turn (with an assistant separator for strict role
+        # alternation), preserving owner authority. Otherwise the last tool
+        # result remains the carrier; without either carrier the steer is
+        # requeued for the next boundary.
+        _inject_pending_steer_pre_api(
+            agent,
+            messages,
+            conversation_history=conversation_history,
+        )
 
         # Prepare messages for API call
         # If we have an ephemeral system prompt, prepend it to the messages
@@ -7609,6 +7756,11 @@ def run_conversation(
                     _pending_verification_response_previewed = (
                         agent._interim_content_was_streamed(final_response or "")
                     )
+                    final_response = None
+                    continue
+
+                if _inject_pending_internal_events_before_stop(agent, messages, final_msg):
+                    agent._persist_session(messages, conversation_history)
                     final_response = None
                     continue
 

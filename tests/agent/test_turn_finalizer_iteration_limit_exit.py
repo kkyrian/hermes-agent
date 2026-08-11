@@ -46,6 +46,7 @@ class _LimitAgent:
         self.persisted_messages = None
         self._handle_max_iterations_called = False
         self._completion_explainer = completion_explainer
+        self.pending_internal_events = []
 
     def _handle_max_iterations(self, messages, api_call_count):
         self._handle_max_iterations_called = True
@@ -80,6 +81,11 @@ class _LimitAgent:
 
     def _drain_pending_steer(self):
         return None
+
+    def _close_internal_event_mailbox(self):
+        pending = list(self.pending_internal_events)
+        self.pending_internal_events.clear()
+        return pending
 
     def clear_interrupt(self):
         pass
@@ -194,6 +200,22 @@ def test_pending_response_records_kanban_timeout(monkeypatch):
         end_run=True,
         event_payload_extra={"budget_used": 60, "budget_max": 60},
     )
+
+
+def test_abnormal_exit_returns_undelivered_internal_events(monkeypatch):
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_a, **_kw: [])
+    agent = _LimitAgent()
+    agent.pending_internal_events = ["subagent completion"]
+
+    result = _finalize(
+        agent,
+        final_response=None,
+        exit_reason="provider_failure",
+        api_call_count=1,
+    )
+
+    assert result["pending_internal_events"] == ["subagent completion"]
+    assert agent.pending_internal_events == []
 
 
 def test_published_pending_candidate_is_not_duplicated_by_finalizer(monkeypatch):

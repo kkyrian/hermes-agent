@@ -3753,6 +3753,123 @@ class AIAgent:
         from agent.agent_runtime_helpers import apply_pending_steer_to_tool_results
         return apply_pending_steer_to_tool_results(self, messages, num_tool_msgs)
 
+    def _apply_pending_internal_events_to_tool_results(
+        self, messages: list, num_tool_msgs: int
+    ) -> bool:
+        """Drain typed internal events into the current tool boundary once."""
+        from agent.agent_runtime_helpers import (
+            apply_pending_internal_events_to_tool_results,
+        )
+
+        return apply_pending_internal_events_to_tool_results(
+            self, messages, num_tool_msgs
+        )
+
+    def _open_internal_event_mailbox(self) -> None:
+        """Allow the active turn to accept typed runtime-internal events."""
+        lock = getattr(self, "_pending_internal_events_lock", None)
+        if lock is None:
+            return
+        with lock:
+            setattr(self, "_internal_event_mailbox_open", True)
+
+    def enqueue_internal_event(self, text: str) -> bool:
+        """Queue one internal event if the active turn still accepts delivery."""
+        cleaned = (text or "").strip()
+        if not cleaned:
+            return False
+        # Codex app-server turns own a separate transport/session loop and do
+        # not consume this mailbox. Reject admission so the gateway preserves
+        # the typed event for the existing idle follow-up path instead.
+        if getattr(self, "api_mode", None) == "codex_app_server":
+            return False
+        lock = getattr(self, "_pending_internal_events_lock", None)
+        pending = getattr(self, "_pending_internal_events", None)
+        if lock is None or not isinstance(pending, list):
+            return False
+        with lock:
+            if not getattr(self, "_internal_event_mailbox_open", False):
+                return False
+            pending.append(cleaned)
+            return True
+
+    def _take_internal_events_at_boundary(
+        self, *, close_if_empty: bool = False
+    ) -> list[str]:
+        """Drain pending events once; optionally close an empty final boundary.
+
+        ``close_if_empty`` makes the final edge atomic with gateway admission:
+        after an empty drain, later arrivals are rejected and use the existing
+        queued-idle delivery path instead of becoming stranded in a finished
+        parent turn.
+        """
+        lock = getattr(self, "_pending_internal_events_lock", None)
+        pending = getattr(self, "_pending_internal_events", None)
+        if lock is None or not isinstance(pending, list):
+            return []
+        with lock:
+            if pending:
+                drained = list(pending)
+                pending.clear()
+                return drained
+            if close_if_empty:
+                setattr(self, "_internal_event_mailbox_open", False)
+            return []
+
+    def _close_internal_event_mailbox(self) -> list[str]:
+        """Stop active-turn admission and return events not yet delivered."""
+        lock = getattr(self, "_pending_internal_events_lock", None)
+        pending = getattr(self, "_pending_internal_events", None)
+        if lock is None or not isinstance(pending, list):
+            return []
+        with lock:
+            setattr(self, "_internal_event_mailbox_open", False)
+            drained = list(pending)
+            pending.clear()
+            return drained
+
+    def _finalize_internal_event_mailbox(
+        self, result: Optional[Dict[str, Any]]
+    ) -> Optional[Dict[str, Any]]:
+        """Close turn admission and preserve any completion not yet sampled."""
+        leftovers = self._close_internal_event_mailbox()
+        if not leftovers:
+            return result
+        if isinstance(result, dict):
+            existing = result.get("pending_internal_events")
+            if isinstance(existing, list):
+                existing.extend(leftovers)
+            else:
+                result["pending_internal_events"] = leftovers
+            return result
+
+        lock = getattr(self, "_pending_internal_events_lock", None)
+        if lock is not None:
+            with lock:
+                preserved = getattr(
+                    self, "_undelivered_internal_events_after_turn", None
+                )
+                if not isinstance(preserved, list):
+                    preserved = []
+                    setattr(
+                        self, "_undelivered_internal_events_after_turn", preserved
+                    )
+                preserved.extend(leftovers)
+        return result
+
+    def _take_undelivered_internal_events_after_turn(self) -> list[str]:
+        """Drain exception-path completions for typed gateway follow-up."""
+        lock = getattr(self, "_pending_internal_events_lock", None)
+        if lock is None:
+            return []
+        with lock:
+            preserved = getattr(self, "_undelivered_internal_events_after_turn", None)
+            if not isinstance(preserved, list) or not preserved:
+                return []
+            drained = list(preserved)
+            preserved.clear()
+            return drained
+
     def _touch_activity(
         self,
         desc: str,
@@ -7998,6 +8115,9 @@ class AIAgent:
                     persist_user_display_metadata=persist_user_display_metadata,
                     moa_config=moa_config,
                 )
+            finalized_result = self._finalize_internal_event_mailbox(result)
+            if isinstance(finalized_result, dict):
+                result = finalized_result
             terminal = result if isinstance(result, dict) else {}
             if terminal.get("interrupted") is True:
                 relay_outcome = "cancelled"
@@ -8014,6 +8134,7 @@ class AIAgent:
                 finish_task_run(**task_context, result=result)
             return result
         except BaseException as exc:
+            self._finalize_internal_event_mailbox(None)
             if isinstance(exc, (KeyboardInterrupt, InterruptedError)) or (
                 type(exc).__name__ == "CancelledError"
             ):
