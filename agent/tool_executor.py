@@ -1885,6 +1885,18 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
         turn_tool_msgs = messages[-num_tools:]
         enforce_turn_budget(turn_tool_msgs, env=get_active_env(effective_task_id), config=_tool_budget)
 
+    # ── Typed internal-event injection ────────────────────────────────
+    if finalize and num_tools > 0:
+        _apply_internal_events = getattr(
+            agent, "_apply_pending_internal_events_to_tool_results", None
+        )
+        if callable(_apply_internal_events) and _apply_internal_events(
+            messages, num_tools
+        ):
+            _flush_session_db_after_tool_progress(
+                agent, messages, stage="internal event after concurrent tool batch"
+            )
+
     # ── /steer injection ──────────────────────────────────────────────
     # Append any pending user steer text to the last tool result so the
     # agent sees it on its next iteration. Runs AFTER budget enforcement
@@ -2791,6 +2803,18 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
     if finalize and num_tools_seq > 0:
         enforce_turn_budget(messages[-num_tools_seq:], env=get_active_env(effective_task_id), config=_tool_budget)
 
+    # ── Typed internal-event injection ────────────────────────────────
+    if finalize and num_tools_seq > 0:
+        _apply_internal_events = getattr(
+            agent, "_apply_pending_internal_events_to_tool_results", None
+        )
+        if callable(_apply_internal_events) and _apply_internal_events(
+            messages, num_tools_seq
+        ):
+            _flush_session_db_after_tool_progress(
+                agent, messages, stage="internal event after sequential tool batch"
+            )
+
     # ── /steer injection ──────────────────────────────────────────────
     # See _execute_tool_calls_parallel for the rationale. Same hook,
     # applied to sequential execution as well.
@@ -2848,7 +2872,7 @@ def execute_tool_calls_segmented(agent, assistant_message, messages: list, effec
         if getattr(agent, "_incremental_persistence_failed", False):
             return
 
-    # ── Whole-turn finalize (budget + /steer) ─────────────────────────
+    # ── Whole-turn finalize (budget + internal events + /steer) ───────
     total_tools = len(assistant_message.tool_calls)
     if total_tools > 0:
         _tool_budget = _budget_for_agent(agent)
@@ -2857,6 +2881,15 @@ def execute_tool_calls_segmented(agent, assistant_message, messages: list, effec
             env=get_active_env(effective_task_id),
             config=_tool_budget,
         )
+        _apply_internal_events = getattr(
+            agent, "_apply_pending_internal_events_to_tool_results", None
+        )
+        if callable(_apply_internal_events) and _apply_internal_events(
+            messages, total_tools
+        ):
+            _flush_session_db_after_tool_progress(
+                agent, messages, stage="internal event after segmented tool batch"
+            )
         agent._apply_pending_steer_to_tool_results(messages, total_tools)
 
 

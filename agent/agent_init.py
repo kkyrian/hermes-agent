@@ -887,6 +887,16 @@ def init_agent(
     agent._pending_steer: Optional[str] = None
     agent._pending_steer_lock = threading.Lock()
 
+    # Typed runtime-internal events (currently completed delegate_task results)
+    # use a separate mailbox from genuine user /steer text.  The conversation
+    # loop opens it only while the parent turn can safely accept one-shot
+    # delivery; gateway admission falls back to the normal idle queue once the
+    # mailbox closes.
+    agent._pending_internal_events: list[str] = []
+    agent._pending_internal_events_lock = threading.Lock()
+    agent._internal_event_mailbox_open = False
+    agent._undelivered_internal_events_after_turn = []
+
     # Active-turn redirect mechanism. A regular follow-up sent while the model
     # is generating is different from a hard /stop: preserve the valid turn
     # prefix, cancel only the in-flight model request, and rebuild its tail with

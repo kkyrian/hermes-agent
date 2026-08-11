@@ -12810,7 +12810,19 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             claim = claim_event_delivery(event, consumer)
             if claim is None:
                 continue
-            self._pending_input.put(synthetic_message)
+            active_agent = getattr(self, "agent", None)
+            enqueue_internal = getattr(active_agent, "enqueue_internal_event", None)
+            admitted = False
+            if event.get("type") == "async_delegation" and callable(enqueue_internal):
+                try:
+                    admitted = bool(enqueue_internal(synthetic_message))
+                except Exception:
+                    logging.debug(
+                        "active CLI parent rejected delegation completion",
+                        exc_info=True,
+                    )
+            if not admitted:
+                self._pending_input.put(synthetic_message)
             complete_event_delivery(event, claim)
 
     def _drain_interrupt_queue_to_pending_input(self) -> None:
@@ -16552,6 +16564,10 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                                 pass
                             break
                     except queue.Empty:
+                        try:
+                            self._drain_process_notifications("cli-active")
+                        except Exception:
+                            pass
                         # Force prompt_toolkit to flush any pending stdout
                         # output from the agent thread.  Without this, the
                         # StdoutProxy buffer only flushes on renderer passes
@@ -16561,6 +16577,10 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 else:
                     # Fallback for non-interactive mode (e.g., single-query)
                     agent_thread.join(0.1)
+                    try:
+                        self._drain_process_notifications("cli-active")
+                    except Exception:
+                        pass
 
             # Wait for the agent thread to finish.  After an interrupt the
             # agent may take a few seconds to clean up (kill subprocess, persist

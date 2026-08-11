@@ -4319,6 +4319,13 @@ def apply_pending_steer_to_tool_results(agent, messages: list, num_tool_msgs: in
     """
     if num_tool_msgs <= 0 or not messages:
         return
+    tail = messages[-1]
+    if isinstance(tail, dict) and tail.get("_internal_event_synthetic"):
+        # Runtime evidence is already later than the tool batch. A steer that
+        # races after that append must remain pending for the pre-API boundary,
+        # where it can be represented after the evidence without rewriting
+        # provider-visible order.
+        return
     steer_text = agent._drain_pending_steer()
     if not steer_text:
         return
@@ -4365,6 +4372,36 @@ def apply_pending_steer_to_tool_results(agent, messages: list, num_tool_msgs: in
         len(steer_text),
         steer_text[:120] + ("..." if len(steer_text) > 120 else ""),
     )
+
+
+def apply_pending_internal_events_to_tool_results(
+    agent, messages: list, num_tool_msgs: int
+) -> bool:
+    """Append one durable hidden internal-context row after the tool batch."""
+    if num_tool_msgs <= 0 or not messages:
+        return False
+    pending = agent._take_internal_events_at_boundary()
+    if not pending:
+        return False
+    payload = "\n\n".join(pending)
+    steer = agent._drain_pending_steer()
+    if steer:
+        from agent.prompt_builder import format_steer_marker
+
+        payload += format_steer_marker(steer)
+    messages.append(
+        {
+            "role": "user",
+            "content": payload,
+            "_internal_event_synthetic": True,
+            "display_kind": "hidden",
+        }
+    )
+    _ra().logger.info(
+        "Delivered %d internal event(s) after tool batch",
+        len(pending),
+    )
+    return True
 
 
 
