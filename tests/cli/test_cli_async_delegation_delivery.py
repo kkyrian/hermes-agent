@@ -52,7 +52,6 @@ def test_cli_completion_drain_admits_to_active_parent_mailbox(monkeypatch):
     cli = HermesCLI.__new__(HermesCLI)
     cli.session_id = "visible-session"
     cli._pending_input = queue.Queue()
-    cli._agent_running = True
     active_agent = MagicMock()
     active_agent.enqueue_internal_event.return_value = True
     cli.agent = active_agent

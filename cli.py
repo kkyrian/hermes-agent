@@ -10860,11 +10860,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             claim = claim_event_delivery(event, consumer)
             if claim is None:
                 continue
-            active_agent = (
-                getattr(self, "agent", None)
-                if getattr(self, "_agent_running", False)
-                else None
-            )
+            active_agent = getattr(self, "agent", None)
             enqueue_internal = getattr(active_agent, "enqueue_internal_event", None)
             admitted = False
             if event.get("type") == "async_delegation" and callable(enqueue_internal):
