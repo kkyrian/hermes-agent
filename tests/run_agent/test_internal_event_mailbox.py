@@ -7,6 +7,7 @@ import run_agent as _ra
 from agent.conversation_loop import (
     _inject_pending_internal_events_before_stop,
     _inject_pending_internal_events_pre_api,
+    _inject_pending_steer_pre_api,
 )
 
 
@@ -239,6 +240,46 @@ def test_user_steer_remains_later_and_higher_authority_at_tool_boundary() -> Non
     content = messages[-1]["content"]
     assert content.index("subagent evidence") < content.index("user correction")
     assert messages[-1]["display_kind"] == "hidden"
+
+
+def test_late_steer_after_internal_boundary_remains_later_and_durable() -> None:
+    agent = _bare_agent()
+    setattr(agent, "_pending_steer", "late owner correction")
+    setattr(agent, "_pending_steer_lock", threading.Lock())
+    setattr(agent, "_persist_user_message_idx", None)
+    setattr(agent, "_persist_user_message_override", None)
+    db = _CapturingSessionDB()
+    setattr(agent, "_session_db", db)
+    setattr(agent, "_session_db_created", True)
+    setattr(agent, "_last_flushed_db_idx", 0)
+    setattr(agent, "session_id", "sess-late-steer")
+    messages = [
+        {"role": "assistant", "tool_calls": [{"id": "call-1"}]},
+        {"role": "tool", "tool_call_id": "call-1", "content": "tool output"},
+        {
+            "role": "user",
+            "content": "internal evidence",
+            "_internal_event_synthetic": True,
+            "display_kind": "hidden",
+        },
+    ]
+    agent._flush_messages_to_session_db(messages, conversation_history=[])
+
+    assert _inject_pending_steer_pre_api(
+        agent, messages, conversation_history=[]
+    )
+
+    assert [message["role"] for message in messages] == [
+        "assistant",
+        "tool",
+        "user",
+        "assistant",
+        "user",
+    ]
+    assert messages[-1]["display_kind"] == "hidden"
+    assert "late owner correction" in messages[-1]["content"]
+    assert agent._repair_message_sequence(messages) == 0
+    assert db.rows[-1]["content"] == messages[-1]["content"]
 
 
 def test_pre_api_boundary_merges_late_completion_into_internal_context() -> None:
