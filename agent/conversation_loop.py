@@ -477,6 +477,17 @@ def _inject_pending_internal_events_pre_api(agent, messages: list) -> bool:
         from agent.prompt_builder import format_steer_marker
 
         payload += format_steer_marker(steer)
+    if target.get("_internal_event_synthetic"):
+        messages.append(
+            {
+                "role": "assistant",
+                "content": (
+                    "[HERMES INTERNAL CONTEXT CONTINUATION — NOT USER INPUT]"
+                ),
+                "_internal_event_synthetic": True,
+                "display_kind": "hidden",
+            }
+        )
     messages.append(
         {
             "role": "user",

@@ -255,9 +255,16 @@ def test_pre_api_boundary_merges_late_completion_into_internal_context() -> None
     ]
 
     assert _inject_pending_internal_events_pre_api(agent, messages)
-    assert messages[-2]["content"] == "first completion"
+    assert messages[-3]["content"] == "first completion"
+    assert messages[-2] == {
+        "role": "assistant",
+        "content": "[HERMES INTERNAL CONTEXT CONTINUATION — NOT USER INPUT]",
+        "_internal_event_synthetic": True,
+        "display_kind": "hidden",
+    }
     assert messages[-1]["content"] == "second completion"
     assert messages[-1]["display_kind"] == "hidden"
+    assert agent._repair_message_sequence(messages) == 0
     assert agent._take_internal_events_at_boundary() == []
 
 
