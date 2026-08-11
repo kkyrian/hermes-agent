@@ -4001,6 +4001,36 @@ def apply_pending_steer_to_tool_results(agent, messages: list, num_tool_msgs: in
     )
 
 
+def apply_pending_internal_events_to_tool_results(
+    agent, messages: list, num_tool_msgs: int
+) -> bool:
+    """Append one durable hidden internal-context row after the tool batch."""
+    if num_tool_msgs <= 0 or not messages:
+        return False
+    pending = agent._take_internal_events_at_boundary()
+    if not pending:
+        return False
+    payload = "\n\n".join(pending)
+    steer = agent._drain_pending_steer()
+    if steer:
+        from agent.prompt_builder import format_steer_marker
+
+        payload += format_steer_marker(steer)
+    messages.append(
+        {
+            "role": "user",
+            "content": payload,
+            "_internal_event_synthetic": True,
+            "display_kind": "hidden",
+        }
+    )
+    _ra().logger.info(
+        "Delivered %d internal event(s) after tool batch",
+        len(pending),
+    )
+    return True
+
+
 
 def force_close_tcp_sockets(client: Any) -> int:
     """Abort in-flight TCP I/O by shutting down sockets WITHOUT closing FDs.

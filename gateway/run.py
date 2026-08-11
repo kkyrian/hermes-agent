@@ -2549,6 +2549,9 @@ _CONVERSATION_SCOPED_STATE: tuple = (
     # and run_sync) must not leak into a future conversation's first user
     # message — session keys are source-derived and REUSED.
     "_pending_turn_sidecar_notes",
+    # Runtime-internal delegation completions waiting behind genuine user
+    # input are conversation-scoped and must not cross /new or /reset.
+    "_typed_internal_followups",
 )
 
 # Sentinel for "caller did not pass metadata" vs "caller passed None".
@@ -3050,6 +3053,89 @@ def _is_control_interrupt_message(message: Optional[str]) -> bool:
         return False
     normalized = " ".join(str(message).strip().split()).lower()
     return normalized in _CONTROL_INTERRUPT_MESSAGES
+
+
+def _pending_internal_event_from_result(
+    result: Optional[Dict[str, Any]],
+    source: Any,
+) -> Optional[MessageEvent]:
+    """Rebuild typed idle delivery for events left by abnormal turn teardown."""
+    if not result:
+        return None
+    raw_events = result.get("pending_internal_events")
+    if not isinstance(raw_events, list):
+        return None
+    events = [str(event).strip() for event in raw_events if str(event).strip()]
+    if not events:
+        return None
+    return MessageEvent(
+        text="\n\n".join(events),
+        source=source,
+        internal=True,
+        metadata={
+            "internal_event_kind": "subagent_completion",
+            "delivery": "turn_finalize_fallback",
+        },
+    )
+
+
+def _merge_agent_undelivered_internal_events(
+    result: Optional[Dict[str, Any]],
+    agent: Any,
+) -> Dict[str, Any]:
+    """Harvest exception-path mailbox events into the normal fallback result."""
+    merged = result if isinstance(result, dict) else {}
+    take_events = getattr(
+        agent, "_take_undelivered_internal_events_after_turn", None
+    )
+    if not callable(take_events):
+        return merged
+    raw_events = take_events()
+    if not isinstance(raw_events, list) or not raw_events:
+        return merged
+    events = list(raw_events)
+    existing = merged.get("pending_internal_events")
+    if isinstance(existing, list):
+        existing.extend(events)
+    else:
+        merged["pending_internal_events"] = list(events)
+    return merged
+
+
+def _queue_typed_internal_followup(runner: Any, session_key: str, event: MessageEvent) -> None:
+    """Queue a runtime-internal follow-up separately from genuine user input."""
+    metadata = getattr(event, "metadata", None)
+    if not isinstance(metadata, dict):
+        metadata = {}
+        event.metadata = metadata
+    metadata.setdefault("internal_event_kind", "subagent_completion")
+    lock = getattr(runner, "_typed_internal_followups_lock", None)
+    if lock is None:
+        lock = threading.Lock()
+        runner._typed_internal_followups_lock = lock
+    with lock:
+        queues = getattr(runner, "_typed_internal_followups", None)
+        if not isinstance(queues, dict):
+            queues = {}
+            runner._typed_internal_followups = queues
+        queues.setdefault(session_key, []).append(event)
+
+
+def _dequeue_typed_internal_followup(
+    runner: Any, session_key: str
+) -> Optional[MessageEvent]:
+    lock = getattr(runner, "_typed_internal_followups_lock", None)
+    queues = getattr(runner, "_typed_internal_followups", None)
+    if lock is None or not isinstance(queues, dict):
+        return None
+    with lock:
+        queue = queues.get(session_key)
+        if not isinstance(queue, list) or not queue:
+            return None
+        event = queue.pop(0)
+        if not queue:
+            queues.pop(session_key, None)
+        return event if isinstance(event, MessageEvent) else None
 
 
 def _strip_response_attachments_for_direct_send(response: str, adapter) -> str:
@@ -5219,6 +5305,10 @@ class TurnRunner:
         # tool_progress mode. Mattermost needs an explicit per-platform
         # opt-in so global scratch-text display does not leak into threads.
         agent.thinking_progress = ctx._thinking_enabled
+        # Open internal completion admission before publishing the live agent
+        # reference, eliminating the setup race where a child finished between
+        # publication and the conversation loop's first sampling boundary.
+        agent._open_internal_event_mailbox()
         # Store agent reference for interrupt support
         ctx.agent_holder[0] = agent
         # Wire the platform thread-rename lane onto the agent, because the
@@ -9042,22 +9132,48 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if not adapter:
             return False  # let default path handle it
 
-        # --- Internal synthetic events must never interrupt/steer ---
-        # Async-delegation completions (delegate_task(background=true)) and
-        # background-process completions (terminal notify_on_complete) re-enter
-        # the originating session as internal MessageEvents. When the session
-        # is busy, treating them like a user TEXT message means interrupt-mode
-        # (the default busy_text_mode) aborts the active turn AND sends a "⚡
-        # Interrupting current task" ack — exactly the opposite of the design
-        # invariant that a completion surfaces as a NEW turn only when idle and
-        # never splices into a running turn. Fall through to the base adapter,
-        # which queues internal events silently (no interrupt, no ack) so they
-        # cascade after the current turn finishes.
-        if getattr(event, "internal", False):
-            return False
-
         _busy_state = self._peek_session_state(session_key)
         running_agent = _busy_state.turn.agent if _busy_state else None
+
+        # --- Typed internal events never interrupt or acquire user authority ---
+        # A completed delegate_task result is useful evidence for the active
+        # parent, so admit it to the parent's one-shot internal-event mailbox.
+        # Other internal events (for example terminal notify_on_complete) keep
+        # established queue-until-idle behavior. A failed subagent admission
+        # enters a separate typed follow-up queue so it can never merge with a
+        # genuine user message in the adapter's single pending slot.
+        if getattr(event, "internal", False):
+            _internal_text = event.text or ""
+            _internal_metadata = getattr(event, "metadata", None) or {}
+            _is_subagent_completion = (
+                _internal_metadata.get("internal_event_kind")
+                == "subagent_completion"
+            ) or _internal_text.startswith(
+                "[HERMES INTERNAL EVENT — SUBAGENT RESULT — NOT USER INPUT"
+            )
+            _enqueue_internal = getattr(running_agent, "enqueue_internal_event", None)
+            if _is_subagent_completion and callable(_enqueue_internal):
+                try:
+                    if bool(_enqueue_internal(_internal_text)):
+                        logger.info(
+                            "Admitted subagent completion to active parent mailbox: session=%s",
+                            session_key,
+                        )
+                        return True
+                except Exception:
+                    logger.warning(
+                        "Active parent rejected subagent completion: session=%s",
+                        session_key,
+                        exc_info=True,
+                    )
+            if _is_subagent_completion:
+                _queue_typed_internal_followup(self, session_key, event)
+                logger.info(
+                    "Queued subagent completion for typed idle follow-up: session=%s",
+                    session_key,
+                )
+                return True
+            return False
 
         effective_mode = self._busy_input_mode
         busy_text_mode = getattr(self, "_busy_text_mode", "interrupt")
@@ -22568,6 +22684,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             parent_session_id = str(evt.get("parent_session_id") or "").strip()
             if parent_session_id:
                 metadata["gateway_session_id"] = parent_session_id
+            if evt.get("type") == "async_delegation":
+                metadata["internal_event_kind"] = "subagent_completion"
+                metadata["delegation_id"] = str(evt.get("delegation_id") or "")
             synth_event = MessageEvent(
                 text=synth_text,
                 message_type=MessageType.TEXT,
@@ -22816,11 +22935,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     async def _async_delegation_watcher(self, interval: float = 2.0) -> None:
         """Drain async-delegation completions and inject them as new turns.
 
-        Background subagents (``delegate_task(background=true)``) run on the
-        async-delegation daemon executor — they have no per-process watcher
+        Asynchronous ``delegate_task`` children run on the delegation daemon
+        executor — they have no per-process watcher
         task, so their completion events would only be seen by the post-turn
-        queue drain. This watcher covers the IDLE case: when a background
-        subagent finishes while no agent turn is running, its result still
+        queue drain. This watcher covers the IDLE case: when a delegated child
+        finishes while no agent turn is running, its result still
         re-enters the originating session promptly.
 
         Mirrors the CLI's idle ``process_loop`` drain. Stays silent when the
@@ -26200,7 +26319,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     self._evict_cached_agent(session_key)
 
             # Check if we were interrupted OR have a queued message (/queue).
-            result = result_holder[0]
+            result = _merge_agent_undelivered_internal_events(
+                result_holder[0], agent_holder[0]
+            )
             adapter = self._adapter_for_source(source)
 
             # Finalize the streaming-TTS consumer (#60671).
@@ -26278,15 +26399,47 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     if pending:
                         logger.debug("Processing queued message after agent completion: '%s...'", pending[:40])
 
+            # Abnormal-exit fallback: preserve typed internal provenance in a
+            # queue separate from genuine user input. User follow-ups and
+            # leftover /steer always drain before this lower-authority event.
+            if result:
+                _leftover_internal_event = _pending_internal_event_from_result(
+                    result,
+                    source,
+                )
+                if _leftover_internal_event is not None:
+                    _queue_typed_internal_followup(
+                        self, session_key, _leftover_internal_event
+                    )
+                    logger.debug(
+                        "Queued leftover subagent completion as typed idle follow-up"
+                    )
+
             # Leftover /steer: if a steer arrived after the last tool batch
             # (e.g. during the final API call), the agent couldn't inject it
             # and returned it in result["pending_steer"]. Deliver it as the
             # next user turn so it isn't silently dropped.
-            if result and not pending and not pending_event:
+            if result:
                 _leftover_steer = result.get("pending_steer")
                 if _leftover_steer:
-                    pending = _leftover_steer
-                    logger.debug("Delivering leftover /steer as next turn: '%s...'", pending[:40])
+                    if not pending and not pending_event:
+                        pending = _leftover_steer
+                    elif callable(_queue_user := getattr(adapter, "queue_message", None)):
+                        _queue_user(session_key, _leftover_steer)
+                    else:
+                        pending = f"{pending or ''}\n{_leftover_steer}".strip()
+                    logger.debug(
+                        "Preserved leftover /steer ahead of internal follow-up: '%s...'",
+                        _leftover_steer[:40],
+                    )
+
+            if not pending and not pending_event:
+                _typed_internal_event = _dequeue_typed_internal_followup(
+                    self, session_key
+                )
+                if _typed_internal_event is not None:
+                    pending_event = _typed_internal_event
+                    pending = _typed_internal_event.text
 
             # Safety net: if the pending text is a slash command (e.g. "/stop",
             # "/new"), discard it — commands should never be passed to the agent
@@ -26337,13 +26490,37 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         _interrupt_depth, session_key,
                     )
                     adapter = self._adapter_for_source(source)
-                    if adapter and pending_event:
+                    if (
+                        pending_event
+                        and getattr(pending_event, "internal", False)
+                        and (getattr(pending_event, "metadata", None) or {}).get(
+                            "internal_event_kind"
+                        )
+                        == "subagent_completion"
+                    ):
+                        _queue_typed_internal_followup(
+                            self, session_key, pending_event
+                        )
+                    elif adapter and pending_event:
                         merge_pending_message_event(adapter._pending_messages, session_key, pending_event)
                     elif adapter and hasattr(adapter, 'queue_message'):
                         adapter.queue_message(session_key, pending)
-                    return result_holder[0] or {"final_response": response, "messages": history}
+                    return result or {"final_response": response, "messages": history}
 
-                was_interrupted = result.get("interrupted")
+                was_interrupted = (result or {}).get("interrupted") or bool(
+                    pending_event
+                    and getattr(pending_event, "internal", False)
+                    and (
+                        (getattr(pending_event, "metadata", None) or {}).get(
+                            "internal_event_kind"
+                        )
+                        == "subagent_completion"
+                        or (getattr(pending_event, "metadata", None) or {}).get(
+                            "delivery"
+                        )
+                        == "turn_finalize_fallback"
+                    )
+                )
                 if not was_interrupted:
                     # Queued message after normal completion — deliver the first
                     # response before processing the queued follow-up.
@@ -26526,7 +26703,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 await self._refresh_agent_cache_message_count(session_key, session_id)
 
                 followup_result = await self._run_agent(
-                    message=next_message,
+                    message=next_message or "",
                     context_prompt=context_prompt,
                     history=updated_history,
                     source=next_source,
