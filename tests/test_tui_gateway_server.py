@@ -2783,6 +2783,28 @@ def test_history_to_messages_drops_display_hidden_scaffolding():
     assert all("api_content" not in m for m in projected)
 
 
+def test_history_to_messages_hides_internal_completion_continuation_rows():
+    history = [
+        {"role": "user", "content": "do the work"},
+        {
+            "role": "assistant",
+            "content": "premature closeout",
+            "display_kind": "hidden",
+        },
+        {
+            "role": "user",
+            "content": "[HERMES INTERNAL EVENT — SUBAGENT RESULT — NOT USER INPUT]",
+            "display_kind": "hidden",
+        },
+        {"role": "assistant", "content": "final answer with review evidence"},
+    ]
+
+    assert server._history_to_messages(history) == [
+        {"role": "user", "text": "do the work"},
+        {"role": "assistant", "text": "final answer with review evidence"},
+    ]
+
+
 def test_history_to_messages_projects_a_skill_turn_to_its_invocation():
     # A /skill invocation is persisted EXPANDED: the activation note plus the
     # entire skill body. That payload is model-facing scaffolding -- this

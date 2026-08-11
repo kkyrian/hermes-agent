@@ -755,6 +755,14 @@ def finalize_turn(
     _leftover_steer = agent._drain_pending_steer()
     if _leftover_steer:
         result["pending_steer"] = _leftover_steer
+    # Close active-turn internal-event admission atomically. Normal text exits
+    # already close on their final model boundary; abnormal exits may still
+    # hold a completion that must take the gateway's typed idle-follow-up path.
+    _close_internal_mailbox = getattr(agent, "_close_internal_event_mailbox", None)
+    if callable(_close_internal_mailbox):
+        _leftover_internal_events = _close_internal_mailbox()
+        if _leftover_internal_events:
+            result["pending_internal_events"] = _leftover_internal_events
     agent._response_was_previewed = False
 
     # Include interrupt message if one triggered the interrupt
