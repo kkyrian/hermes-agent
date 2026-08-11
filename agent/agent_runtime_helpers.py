@@ -3953,6 +3953,13 @@ def apply_pending_steer_to_tool_results(agent, messages: list, num_tool_msgs: in
     """
     if num_tool_msgs <= 0 or not messages:
         return
+    tail = messages[-1]
+    if isinstance(tail, dict) and tail.get("_internal_event_synthetic"):
+        # Runtime evidence is already later than the tool batch. A steer that
+        # races after that append must remain pending for the pre-API boundary,
+        # where it can be represented after the evidence without rewriting
+        # provider-visible order.
+        return
     steer_text = agent._drain_pending_steer()
     if not steer_text:
         return

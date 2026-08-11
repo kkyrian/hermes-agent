@@ -254,8 +254,12 @@ def test_late_steer_after_internal_boundary_remains_later_and_durable() -> None:
     setattr(agent, "_last_flushed_db_idx", 0)
     setattr(agent, "session_id", "sess-late-steer")
     messages = [
-        {"role": "assistant", "tool_calls": [{"id": "call-1"}]},
+        {
+            "role": "assistant",
+            "tool_calls": [{"id": "call-1"}, {"id": "call-2"}],
+        },
         {"role": "tool", "tool_call_id": "call-1", "content": "tool output"},
+        {"role": "tool", "tool_call_id": "call-2", "content": "tool output"},
         {
             "role": "user",
             "content": "internal evidence",
@@ -265,12 +269,16 @@ def test_late_steer_after_internal_boundary_remains_later_and_durable() -> None:
     ]
     agent._flush_messages_to_session_db(messages, conversation_history=[])
 
+    agent._apply_pending_steer_to_tool_results(messages, 2)
+    assert agent._pending_steer == "late owner correction"
+
     assert _inject_pending_steer_pre_api(
         agent, messages, conversation_history=[]
     )
 
     assert [message["role"] for message in messages] == [
         "assistant",
+        "tool",
         "tool",
         "user",
         "assistant",
