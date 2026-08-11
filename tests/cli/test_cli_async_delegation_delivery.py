@@ -1,6 +1,7 @@
 """Regression coverage for CLI async-delegation completion ownership."""
 
 import queue
+from unittest.mock import MagicMock
 
 from cli import HermesCLI
 
@@ -45,6 +46,50 @@ def test_cli_completion_drain_uses_visible_session_identity(monkeypatch):
     assert cli._pending_input.get_nowait() == "completion payload"
     assert claimed == [(event, "cli-idle")]
     assert completed == [(event, "claim-token")]
+
+
+def test_cli_completion_drain_admits_to_active_parent_mailbox(monkeypatch):
+    cli = HermesCLI.__new__(HermesCLI)
+    cli.session_id = "visible-session"
+    cli._pending_input = queue.Queue()
+    cli._agent_running = True
+    active_agent = MagicMock()
+    active_agent.enqueue_internal_event.return_value = True
+    cli.agent = active_agent
+    event = {
+        "type": "async_delegation",
+        "delegation_id": "deleg_active",
+        "session_key": "visible-session",
+    }
+
+    class FakeRegistry:
+        def drain_notifications(self, *, session_key="", owns_event=None):
+            assert session_key == "visible-session"
+            assert callable(owns_event)
+            assert owns_event(event)
+            return [(event, "active completion payload")]
+
+    completed = []
+    monkeypatch.setattr(
+        "tools.process_registry.process_registry",
+        FakeRegistry(),
+    )
+    monkeypatch.setattr(
+        "tools.async_delegation.claim_event_delivery",
+        lambda evt, consumer: "active-claim",
+    )
+    monkeypatch.setattr(
+        "tools.async_delegation.complete_event_delivery",
+        lambda evt, token: completed.append((evt, token)),
+    )
+
+    cli._drain_process_notifications("cli-active")
+
+    active_agent.enqueue_internal_event.assert_called_once_with(
+        "active completion payload"
+    )
+    assert cli._pending_input.empty()
+    assert completed == [(event, "active-claim")]
 
 
 def test_cli_completion_ownership_rejects_foreign_session():
