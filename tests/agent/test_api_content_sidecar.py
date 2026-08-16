@@ -192,6 +192,7 @@ class _FakeAgent:
         # Captures the user message's api_content at persist time, proving
         # the stamp lands BEFORE the early persist writes the row.
         self.api_content_at_persist = "<unset>"
+        self.content_at_persist = None
 
     def _ensure_db_session(self):
         pass
@@ -216,6 +217,7 @@ class _FakeAgent:
 
     def _persist_session(self, messages, _history=None):
         self.api_content_at_persist = messages[-1].get("api_content")
+        self.content_at_persist = messages[-1].get("content")
 
 
 def _build(agent, **overrides):
@@ -268,6 +270,29 @@ class TestPrologueStamping:
             ctx = _build(agent)
         assert "api_content" not in ctx.messages[ctx.current_turn_user_idx]
         assert agent.api_content_at_persist is None
+
+    def test_multimodal_turn_retains_plugin_context_as_text_part(self):
+        agent = _FakeAgent()
+        content = [
+            {"type": "text", "text": "hello"},
+            {"type": "image_url", "image_url": {"url": "data:image/png;base64,abc"}},
+        ]
+        with patch(
+            "hermes_cli.plugins.invoke_hook",
+            return_value=[{"context": "MUST-DELIVER-SPILL"}],
+        ):
+            ctx = _build(
+                agent,
+                user_message=content,
+                summarize_user_message_for_log=lambda _value: "multimodal",
+            )
+        msg = ctx.messages[ctx.current_turn_user_idx]
+        assert msg["content"][-1] == {
+            "type": "text",
+            "text": "MUST-DELIVER-SPILL",
+        }
+        assert "api_content" not in msg
+        assert agent.content_at_persist == msg["content"]
 
     def test_no_stamp_for_codex_app_server(self):
         """codex_app_server turns bypass the api_messages build, so the

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
+from pathlib import Path
 from unittest.mock import patch
 
 from agent.tool_executor import (
@@ -150,6 +151,89 @@ def test_post_tool_context_appends_to_multimodal_result(tmp_path):
     }
     replay = db.get_messages_as_conversation(session_id)
     assert replay[0]["content"] == messages[0]["content"]
+    db.close()
+
+
+def test_post_tool_context_spills_joined_aggregate_and_persists_preview(tmp_path):
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.create_session("aggregate", source="cli")
+    db.append_message("aggregate", "tool", content="result", tool_call_id="call-1")
+    agent = SimpleNamespace(
+        session_id="aggregate",
+        _session_db=db,
+        _current_turn_id="turn-1",
+    )
+    message = {"role": "tool", "tool_call_id": "call-1", "content": "result"}
+    cfg = {
+        "enabled": True,
+        "max_chars": 100,
+        "preview_head": 20,
+        "preview_tail": 20,
+        "directory": str(tmp_path / "spills"),
+    }
+    with (
+        patch("hermes_cli.lifecycle.has_hook", return_value=True),
+        patch(
+            "hermes_cli.lifecycle.invoke_hook",
+            return_value=[{"context": "A" * 70}, {"context": "B" * 70}],
+        ),
+        patch("tools.hook_output_spill.get_spill_config", return_value=cfg),
+    ):
+        _finalize_tool_result_batch(
+            agent,
+            [message],
+            [_tool_call("read_file", "call-1")],
+            effective_task_id="task",
+            api_call_count=1,
+        )
+
+    assert "post_tool_context output truncated" in message["content"]
+    saved_path = Path(message["content"].split("full content saved to ", 1)[1].split("]", 1)[0])
+    assert saved_path.read_text(encoding="utf-8") == "A" * 70 + "\n\n" + "B" * 70
+    assert db.get_messages_as_conversation("aggregate")[0]["content"] == message["content"]
+    db.close()
+
+
+def test_mandatory_spill_failure_persists_complete_post_tool_context(tmp_path):
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.create_session("spill-failure", source="cli")
+    db.append_message("spill-failure", "tool", content="result", tool_call_id="call-1")
+    agent = SimpleNamespace(
+        session_id="spill-failure",
+        _session_db=db,
+        _current_turn_id="turn-1",
+    )
+    message = {"role": "tool", "tool_call_id": "call-1", "content": "result"}
+    context = "HEAD-" + "x" * 500 + "-UNIQUE-MIDDLE-" + "y" * 500 + "-TAIL"
+    with (
+        patch("hermes_cli.lifecycle.has_hook", return_value=True),
+        patch(
+            "hermes_cli.lifecycle.invoke_hook",
+            return_value=[
+                {
+                    "context": context,
+                    "spill_required": True,
+                    "spill_failure_action": "Spill failed.",
+                }
+            ],
+        ),
+        patch(
+            "tools.hook_output_spill.write_spill_file",
+            return_value={"ok": False, "path": None, "error": "ENOSPC"},
+        ),
+    ):
+        _finalize_tool_result_batch(
+            agent,
+            [message],
+            [_tool_call("read_file", "call-1")],
+            effective_task_id="task",
+            api_call_count=1,
+        )
+
+    assert "mandatory spill failed" in message["content"]
+    assert context in message["content"]
+    assert "UNIQUE-MIDDLE" in message["content"]
+    assert db.get_messages_as_conversation("spill-failure")[0]["content"] == message["content"]
     db.close()
 
 
