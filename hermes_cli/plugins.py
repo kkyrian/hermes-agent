@@ -161,6 +161,10 @@ _install_plugin_debug_handler()
 VALID_HOOKS: Set[str] = {
     "pre_tool_call",
     "post_tool_call",
+    # Additive model context appended to finalized tool results after
+    # per-result/aggregate budgeting. Callbacks return {"context": "..."};
+    # all non-empty contexts compose in registration order.
+    "post_tool_context",
     "transform_terminal_output",
     "transform_tool_result",
     # Transform LLM output before it's returned to the user.

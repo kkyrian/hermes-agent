@@ -516,6 +516,58 @@ class TestWireInvariant:
         assert user_rows[0]["content"] == "hello please"
         assert user_rows[0]["api_content"] == sent_1
 
+    def test_post_tool_context_reaches_same_turn_and_replays_exactly(self, wire_env):
+        make_agent, handler, db, sid = wire_env
+        agent = make_agent()
+        handler.response_queue.append(
+            _tc_resp("read_file", '{"path": "/nonexistent-path"}')
+        )
+        handler.response_queue.append(_text_resp("done"))
+
+        def _hook(hook_name, **kwargs):
+            if hook_name == "pre_llm_call":
+                return [{"context": "TURN-START"}]
+            if hook_name == "post_tool_context":
+                assert kwargs["tool_name"] == "read_file"
+                return [{"context": "SAME-TURN-DELTA"}]
+            return []
+
+        with (
+            patch("hermes_cli.plugins.invoke_hook", side_effect=_hook),
+            patch(
+                "hermes_cli.plugins.has_hook",
+                side_effect=lambda name: name == "post_tool_context",
+            ),
+        ):
+            agent.run_conversation("inspect it", conversation_history=[], task_id="t")
+
+        requests = _chat_requests(handler)
+        assert len(requests) == 2
+        assert requests[1]["messages"][: len(requests[0]["messages"])] == requests[0]["messages"]
+        tool_results = [
+            message
+            for message in requests[1]["messages"]
+            if message.get("role") == "tool"
+        ]
+        assert tool_results[0]["content"].endswith("\n\nSAME-TURN-DELTA")
+        assert [message["role"] for message in requests[1]["messages"][-2:]] == [
+            "assistant",
+            "tool",
+        ]
+
+        sent = tool_results[0]["content"]
+        history = db.get_messages_as_conversation(sid)
+        handler.captured_requests = []
+        make_agent().run_conversation(
+            "next question", conversation_history=history, task_id="t2"
+        )
+        replayed = [
+            message
+            for message in _chat_requests(handler)[0]["messages"]
+            if message.get("role") == "tool"
+        ]
+        assert replayed[0]["content"] == sent
+
     def test_next_turn_replays_previous_turn_bytes(self, wire_env):
         """The cache invariant: the serialized user message replayed in turn
         N+1 (history reloaded from the store) EQUALS the bytes turn N sent."""
