@@ -44,6 +44,7 @@ from __future__ import annotations
 
 import logging
 import os
+import tempfile
 import uuid
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -112,21 +113,149 @@ def get_spill_config() -> Dict[str, Any]:
     }
 
 
-def _resolve_spill_dir(directory_override: Optional[str], session_id: Optional[str]) -> Path:
+def _safe_segment(value: str, fallback: str) -> str:
+    cleaned = "".join(ch if ch.isalnum() or ch in "-_." else "_" for ch in value)
+    cleaned = cleaned.replace("..", "_").strip(".")
+    return cleaned or fallback
+
+
+def _resolve_spill_dir(
+    directory_override: Optional[str],
+    session_id: Optional[str],
+    *,
+    namespace: str = "hook_outputs",
+    profile_local: bool = False,
+) -> Path:
     """Return the directory where spill files for this session live."""
-    if directory_override:
+    if directory_override and not profile_local:
         base = Path(os.path.expanduser(directory_override))
     else:
         from hermes_constants import get_hermes_home
 
-        base = Path(get_hermes_home()) / "hook_outputs"
+        base = Path(get_hermes_home())
+        for segment in namespace.replace("\\", "/").split("/"):
+            if segment:
+                base /= _safe_segment(segment, "spill")
 
     # Group by session so spills are contained per conversation.
-    session_segment = session_id or "no-session"
-    # Defensive: strip path separators so a weird session id can't
-    # escape the directory.
-    session_segment = session_segment.replace("/", "_").replace("\\", "_").replace("..", "_")
+    session_segment = _safe_segment(session_id or "no-session", "no-session")
     return base / session_segment
+
+
+def write_spill_file(
+    text: str,
+    *,
+    session_id: Optional[str],
+    namespace: str = "hook_outputs",
+    directory_override: Optional[str] = None,
+    profile_local: bool = False,
+) -> Dict[str, Any]:
+    """Atomically persist spill content and return a structured result."""
+    if profile_local:
+        directory_fd: Optional[int] = None
+        temp_name: Optional[str] = None
+        try:
+            from hermes_constants import get_hermes_home
+
+            root = Path(get_hermes_home()).resolve(strict=True)
+            segments = [
+                _safe_segment(segment, "spill")
+                for segment in namespace.replace("\\", "/").split("/")
+                if segment
+            ]
+            segments.append(_safe_segment(session_id or "no-session", "no-session"))
+            directory_fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+            for segment in segments:
+                try:
+                    os.mkdir(segment, 0o700, dir_fd=directory_fd)
+                except FileExistsError:
+                    pass
+                next_fd = os.open(
+                    segment,
+                    os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                    dir_fd=directory_fd,
+                )
+                os.close(directory_fd)
+                directory_fd = next_fd
+            temp_name = f".spill-{uuid.uuid4().hex}.tmp"
+            final_name = f"{uuid.uuid4().hex}.txt"
+            fd = os.open(
+                temp_name,
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                0o600,
+                dir_fd=directory_fd,
+            )
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                handle.write(text)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(
+                temp_name,
+                final_name,
+                src_dir_fd=directory_fd,
+                dst_dir_fd=directory_fd,
+            )
+            temp_name = None
+            os.chmod(final_name, 0o600, dir_fd=directory_fd, follow_symlinks=False)
+            return {
+                "ok": True,
+                "path": str(root.joinpath(*segments, final_name)),
+                "error": None,
+            }
+        except BaseException as exc:
+            if directory_fd is not None and temp_name is not None:
+                try:
+                    os.unlink(temp_name, dir_fd=directory_fd)
+                except OSError:
+                    pass
+            if not isinstance(exc, Exception):
+                raise
+            logger.warning("hook output spill failed: %s", exc)
+            return {"ok": False, "path": None, "error": str(exc)}
+        finally:
+            if directory_fd is not None:
+                try:
+                    os.close(directory_fd)
+                except OSError:
+                    pass
+
+    temp_path: Optional[Path] = None
+    try:
+        spill_dir = _resolve_spill_dir(
+            directory_override,
+            session_id,
+            namespace=namespace,
+            profile_local=profile_local,
+        )
+        spill_dir.mkdir(parents=True, exist_ok=True)
+        fd, raw_temp = tempfile.mkstemp(prefix=".spill-", suffix=".tmp", dir=spill_dir)
+        temp_path = Path(raw_temp)
+        try:
+            os.fchmod(fd, 0o600)
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                handle.write(text)
+                handle.flush()
+                os.fsync(handle.fileno())
+            spill_path = spill_dir / f"{uuid.uuid4().hex}.txt"
+            os.replace(temp_path, spill_path)
+            os.chmod(spill_path, 0o600)
+        except BaseException:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+            raise
+        return {"ok": True, "path": str(spill_path), "error": None}
+    except BaseException as exc:
+        if temp_path is not None:
+            try:
+                temp_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+        if not isinstance(exc, Exception):
+            raise
+        logger.warning("hook output spill failed: %s", exc)
+        return {"ok": False, "path": None, "error": str(exc)}
 
 
 def _build_preview(
@@ -136,6 +265,8 @@ def _build_preview(
     saved_path: Optional[str],
     *,
     source: str,
+    success_action: Optional[str] = None,
+    failure_action: Optional[str] = None,
 ) -> str:
     """Assemble the in-prompt preview with head/tail and saved-path footer."""
     total = len(text)
@@ -152,6 +283,9 @@ def _build_preview(
     if tail_chunk:
         parts.append("--- tail ---")
         parts.append(tail_chunk)
+    action = success_action if saved_path else failure_action
+    if action:
+        parts.append(action)
     return "\n".join(parts)
 
 
@@ -161,6 +295,10 @@ def spill_if_oversized(
     session_id: Optional[str] = None,
     source: str = "hook",
     config: Optional[Dict[str, Any]] = None,
+    force: bool = False,
+    namespace: str = "hook_outputs",
+    success_action: Optional[str] = None,
+    failure_action: Optional[str] = None,
 ) -> str:
     """Spill ``text`` to disk if it exceeds the configured cap.
 
@@ -192,11 +330,11 @@ def spill_if_oversized(
             return ""
 
     cfg = config if config is not None else get_spill_config()
-    if not cfg.get("enabled", True):
+    if not force and not cfg.get("enabled", True):
         return text
 
     max_chars = int(cfg.get("max_chars") or DEFAULT_MAX_CHARS)
-    if len(text) <= max_chars:
+    if not force and len(text) <= max_chars:
         return text
 
     head = int(cfg.get("preview_head") or 0)
@@ -205,30 +343,31 @@ def spill_if_oversized(
 
     # Try to write the spill file. If that fails we still need to return
     # something bounded — never let a disk failure blow up the turn.
-    saved_path: Optional[str] = None
-    try:
-        spill_dir = _resolve_spill_dir(directory_override, session_id)
-        from tools.spill_safety import ensure_spill_dir, write_text_exclusive
-
-        # Hook context may embed raw secrets: private dir/file perms, and an
-        # exclusive symlink-refusing create so a planted link can't redirect
-        # the write (predictable per-session directory).
-        ensure_spill_dir(spill_dir, private=True)
-        filename = f"{uuid.uuid4().hex}.txt"
-        spill_path = spill_dir / filename
-        # Write the raw text plus a trailing newline so tail readers
-        # (``tail -f``, editors) don't report "missing newline".
-        write_text_exclusive(
-            spill_path,
-            text if text.endswith("\n") else text + "\n",
-            private=True,
-        )
-        saved_path = str(spill_path)
-    except Exception as exc:
-        logger.warning("hook output spill failed: %s", exc)
-        saved_path = None
-
-    return _build_preview(text, head, tail, saved_path, source=source)
+    result = write_spill_file(
+        text,
+        session_id=session_id,
+        namespace=namespace,
+        directory_override=directory_override,
+        profile_local=force,
+    )
+    if force and not result["ok"]:
+        parts = [
+            f"[{source} mandatory spill failed — {len(text):,} chars; complete "
+            "content retained inline]",
+            text,
+        ]
+        if failure_action:
+            parts.append(failure_action)
+        return "\n".join(parts)
+    return _build_preview(
+        text,
+        head,
+        tail,
+        result["path"],
+        source=source,
+        success_action=success_action,
+        failure_action=failure_action,
+    )
 
 
 __all__ = [
@@ -238,4 +377,5 @@ __all__ = [
     "DEFAULT_ENABLED",
     "get_spill_config",
     "spill_if_oversized",
+    "write_spill_file",
 ]

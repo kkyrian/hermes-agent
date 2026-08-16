@@ -1264,6 +1264,10 @@ def build_turn_context(
             cwd=_logical_cwd,
         )
         _ctx_parts: list[str] = []
+        _spill_required = False
+        _spill_namespace = "hook_outputs"
+        _spill_success_action = None
+        _spill_failure_action = None
         # Spill oversized per-hook context to disk so a runaway plugin
         # can't inflate every subsequent turn's prompt. Ported from
         # openai/codex PR #21069 ("Spill large hook outputs from context").
@@ -1280,25 +1284,47 @@ def build_turn_context(
             _piece: str = ""
             if isinstance(r, dict) and r.get("context"):
                 _piece = str(r["context"])
+                if r.get("spill_required"):
+                    _spill_required = True
+                    _spill_namespace = str(r.get("spill_namespace") or "context-delta")
+                    _spill_success_action = r.get("spill_success_action")
+                    _spill_failure_action = r.get("spill_failure_action")
             elif isinstance(r, str) and r.strip():
                 _piece = r
             else:
                 continue
-            if _spill_if_oversized is not None:
-                try:
-                    _piece = _spill_if_oversized(
-                        _piece,
-                        session_id=agent.session_id,
-                        source="plugin hook",
-                        config=_spill_config_cached,
-                    )
-                except Exception as _spill_exc:
-                    logger.warning("hook context spill failed: %s", _spill_exc)
             _ctx_parts.append(_piece)
         if _ctx_parts:
             plugin_user_context = "\n\n".join(_ctx_parts)
+            if _spill_if_oversized is not None:
+                try:
+                    plugin_user_context = _spill_if_oversized(
+                        plugin_user_context,
+                        session_id=agent.session_id,
+                        source="plugin hook",
+                        config=_spill_config_cached,
+                        force=_spill_required,
+                        namespace=_spill_namespace,
+                        success_action=_spill_success_action,
+                        failure_action=_spill_failure_action,
+                    )
+                except Exception as _spill_exc:
+                    logger.warning("hook context spill failed: %s", _spill_exc)
     except Exception as exc:
         logger.warning("pre_llm_call hook failed: %s", exc)
+
+    # Multimodal user content cannot carry the string-only api_content sidecar.
+    # Append plugin context as a durable text part so mandatory diagnostics and
+    # spill references are neither dropped nor duplicated.
+    _plugin_turn_content = (
+        messages[current_turn_user_idx].get("content")
+        if 0 <= current_turn_user_idx < len(messages)
+        and isinstance(messages[current_turn_user_idx], dict)
+        else None
+    )
+    if plugin_user_context and isinstance(_plugin_turn_content, list):
+        append_notes_to_multimodal_content(_plugin_turn_content, plugin_user_context)
+        plugin_user_context = ""
 
     # Gateway must-deliver notes (auto-reset note, first-contact intro,
     # voice-channel change) ride the same user-message injection channel as

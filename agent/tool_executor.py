@@ -188,27 +188,42 @@ def _finalize_tool_result_batch(
                 logger.debug("post_tool_context hook failed", exc_info=True)
                 continue
             context_parts = []
+            spill_required = False
+            spill_namespace = "hook_outputs"
+            spill_success_action = None
+            spill_failure_action = None
             for result in results:
                 if not isinstance(result, dict):
                     continue
                 context = result.get("context")
                 if isinstance(context, str) and context.strip():
-                    try:
-                        from tools.hook_output_spill import spill_if_oversized
-
-                        context = spill_if_oversized(
-                            context,
-                            session_id=getattr(agent, "session_id", None),
-                            source="post_tool_context",
+                    if result.get("spill_required"):
+                        spill_required = True
+                        spill_namespace = str(
+                            result.get("spill_namespace") or "context-delta"
                         )
-                    except Exception:
-                        logger.debug(
-                            "post_tool_context spill handling failed",
-                            exc_info=True,
-                        )
+                        spill_success_action = result.get("spill_success_action")
+                        spill_failure_action = result.get("spill_failure_action")
                     context_parts.append(context)
             if context_parts:
                 context = "\n\n".join(context_parts)
+                try:
+                    from tools.hook_output_spill import spill_if_oversized
+
+                    context = spill_if_oversized(
+                        context,
+                        session_id=getattr(agent, "session_id", None),
+                        source="post_tool_context",
+                        force=spill_required,
+                        namespace=spill_namespace,
+                        success_action=spill_success_action,
+                        failure_action=spill_failure_action,
+                    )
+                except Exception:
+                    logger.debug(
+                        "post_tool_context spill handling failed",
+                        exc_info=True,
+                    )
                 if isinstance(content, str):
                     message["content"] = content + "\n\n" + context
                 else:
