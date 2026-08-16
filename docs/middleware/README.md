@@ -106,6 +106,8 @@ For each tool call, Hermes applies middleware in this order:
 5. Emit `post_tool_call` observer hooks.
 6. Apply `transform_tool_result` hooks before the result is appended back into
    conversation context.
+7. After the complete batch is budgeted, append all `post_tool_context`
+   `{"context": "..."}` returns and persist the exact provider-bound bytes.
 
 Tool request middleware runs before approval checks. Use it carefully: a
 rewritten path, command, or URL is the value downstream policy will evaluate.

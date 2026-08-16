@@ -113,6 +113,144 @@ def _budget_for_agent(agent) -> BudgetConfig:
     except Exception:
         return DEFAULT_BUDGET
 
+
+def _finalize_tool_result_batch(
+    agent,
+    tool_messages: list[dict],
+    tool_calls,
+    *,
+    effective_task_id: str,
+    api_call_count: int,
+) -> bool:
+    """Append post-budget plugin context and persist exact provider bytes.
+
+    Tool rows are inserted incrementally for crash safety before the whole batch
+    is known. Callers run aggregate budgeting, internal-event injection, and
+    steering first; this final step appends plugin context and backfills every
+    finalized row by tool_call_id so resumed-session replay is byte-identical.
+    """
+    try:
+        from hermes_cli.lifecycle import has_hook, invoke_hook
+
+        has_context_hook = has_hook("post_tool_context")
+    except Exception:
+        has_context_hook = False
+        invoke_hook = None
+
+    cached_metadata = getattr(agent, "_post_tool_context_metadata", {})
+    metadata_by_call = {}
+    for message, tool_call in zip(tool_messages, tool_calls):
+        tool_call_id = getattr(tool_call, "id", "") or message.get("tool_call_id", "")
+        metadata_by_call[tool_call_id] = cached_metadata.pop(tool_call_id, None)
+
+    if has_context_hook and invoke_hook is not None:
+        try:
+            from tools.file_tools import _resolve_base_dir
+
+            logical_cwd = str(_resolve_base_dir(effective_task_id))
+        except Exception:
+            logical_cwd = None
+
+        for message, tool_call in zip(tool_messages, tool_calls):
+            content = message.get("content")
+            if not isinstance(content, (str, list)):
+                continue
+            tool_call_id = getattr(tool_call, "id", "") or message.get("tool_call_id", "")
+            cached = metadata_by_call.get(tool_call_id)
+            if cached is not None:
+                tool_name = cached["tool_name"]
+                args = cached["args"]
+            else:
+                function = getattr(tool_call, "function", None)
+                tool_name = getattr(function, "name", "") or message.get("name", "")
+                raw_args = getattr(function, "arguments", "{}")
+                if isinstance(raw_args, dict):
+                    args = raw_args
+                else:
+                    try:
+                        args = json.loads(raw_args or "{}")
+                    except (TypeError, ValueError, json.JSONDecodeError):
+                        args = {}
+            try:
+                results = invoke_hook(
+                    "post_tool_context",
+                    tool_name=tool_name,
+                    args=args,
+                    result=content,
+                    task_id=effective_task_id or "",
+                    session_id=getattr(agent, "session_id", None) or "",
+                    tool_call_id=tool_call_id,
+                    turn_id=getattr(agent, "_current_turn_id", "") or "",
+                    api_call_count=api_call_count,
+                    cwd=logical_cwd,
+                )
+            except Exception:
+                logger.debug("post_tool_context hook failed", exc_info=True)
+                continue
+            context_parts = []
+            for result in results:
+                if not isinstance(result, dict):
+                    continue
+                context = result.get("context")
+                if isinstance(context, str) and context.strip():
+                    try:
+                        from tools.hook_output_spill import spill_if_oversized
+
+                        context = spill_if_oversized(
+                            context,
+                            session_id=getattr(agent, "session_id", None),
+                            source="post_tool_context",
+                        )
+                    except Exception:
+                        logger.debug(
+                            "post_tool_context spill handling failed",
+                            exc_info=True,
+                        )
+                    context_parts.append(context)
+            if context_parts:
+                context = "\n\n".join(context_parts)
+                if isinstance(content, str):
+                    message["content"] = content + "\n\n" + context
+                else:
+                    message["content"] = [
+                        *content,
+                        {"type": "text", "text": "\n\n" + context},
+                    ]
+
+    session_db = getattr(agent, "_session_db", None)
+    session_id = getattr(agent, "session_id", None)
+    if session_db is None or not session_id:
+        return bool(has_context_hook)
+
+    for message in tool_messages:
+        tool_call_id = str(message.get("tool_call_id") or "")
+        persistence_cause = "unknown"
+        try:
+            updated = session_db.set_tool_result_content(
+                session_id,
+                tool_call_id,
+                message.get("content"),
+            )
+        except Exception as exc:
+            updated = 0
+            try:
+                from hermes_state import classify_persistence_error
+
+                persistence_cause = classify_persistence_error(exc)
+            except Exception:
+                persistence_cause = "unknown"
+            logger.warning(
+                "Final tool-result persistence failed for session=%s call=%s",
+                session_id,
+                tool_call_id or "none",
+                exc_info=True,
+            )
+        if updated != 1:
+            agent._incremental_persistence_failed = True
+            agent._last_persistence_error_cause = persistence_cause
+            return True
+    return bool(has_context_hook)
+
 # Maximum number of concurrent worker threads for parallel tool execution.
 # Mirrors the constant in ``run_agent`` for tests/imports that look here.
 _MAX_TOOL_WORKERS = 8
@@ -277,6 +415,23 @@ def _is_interpreter_shutdown_submit_error(exc: RuntimeError) -> bool:
     return "cannot schedule new futures after interpreter shutdown" in str(exc)
 
 
+def _cache_post_tool_context_metadata(
+    agent,
+    *,
+    tool_call_id: str,
+    function_name: str,
+    function_args: dict,
+) -> None:
+    metadata = getattr(agent, "_post_tool_context_metadata", None)
+    if metadata is None:
+        metadata = {}
+        agent._post_tool_context_metadata = metadata
+    metadata[tool_call_id or ""] = {
+        "tool_name": function_name,
+        "args": dict(function_args or {}),
+    }
+
+
 def _emit_terminal_post_tool_call(
     agent,
     *,
@@ -291,6 +446,12 @@ def _emit_terminal_post_tool_call(
     error_message: str | None = None,
     middleware_trace: Optional[list[dict[str, Any]]] = None,
 ) -> None:
+    _cache_post_tool_context_metadata(
+        agent,
+        tool_call_id=tool_call_id,
+        function_name=function_name,
+        function_args=function_args,
+    )
     try:
         from model_tools import _emit_post_tool_call_hook
         _emit_post_tool_call_hook(
@@ -746,18 +907,23 @@ def _run_agent_tool_execution_middleware(
             api_request_id=getattr(agent, "_current_api_request_id", "") or "",
         )
 
-    result, _relay_args = relay_tools.execute(
-        function_name,
-        function_args,
-        _hermes_pipeline,
-        session_id=str(getattr(agent, "session_id", "") or ""),
-        metadata={
-            "task_id": effective_task_id or "",
-            "turn_id": getattr(agent, "_current_turn_id", "") or "",
-            "api_request_id": getattr(agent, "_current_api_request_id", "") or "",
-            "tool_call_id": tool_call_id or "",
-        },
-    )
+    try:
+        result, _relay_args = relay_tools.execute(
+            function_name,
+            function_args,
+            _hermes_pipeline,
+            session_id=str(getattr(agent, "session_id", "") or ""),
+            metadata={
+                "task_id": effective_task_id or "",
+                "turn_id": getattr(agent, "_current_turn_id", "") or "",
+                "api_request_id": getattr(agent, "_current_api_request_id", "") or "",
+                "tool_call_id": tool_call_id or "",
+            },
+        )
+    except KeyboardInterrupt as exc:
+        setattr(exc, "_hermes_effective_tool_args", dict(state["args"]))
+        setattr(exc, "_hermes_middleware_trace", list(state["middleware_trace"]))
+        raise
     return _ManagedToolResult(
         result=result,
         args=state["args"],
@@ -1087,17 +1253,20 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
     # ── Pre-flight: interrupt check ──────────────────────────────────
     if agent._interrupt_requested:
         print(f"{agent.log_prefix}⚡ Interrupt: skipping {num_tools} tool call(s)")
+        cancelled_messages = []
         for tc in tool_calls:
             cancelled_result = (
                 f"[Tool execution cancelled — {tc.function.name} was skipped "
                 "due to user interrupt]"
             )
-            messages.append(make_tool_result_message(
+            cancelled_message = make_tool_result_message(
                 tc.function.name,
                 cancelled_result,
                 tc.id,
                 effect_disposition="none",
-            ))
+            )
+            messages.append(cancelled_message)
+            cancelled_messages.append(cancelled_message)
             _emit_terminal_post_tool_call(
                 agent,
                 function_name=tc.function.name,
@@ -1113,6 +1282,31 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                 agent,
                 messages,
                 stage=f"cancelled tool result {tc.function.name}",
+            )
+        if finalize and cancelled_messages:
+            enforce_turn_budget(
+                cancelled_messages,
+                env=get_active_env(effective_task_id),
+                config=_tool_budget,
+            )
+            _apply_internal_events = getattr(
+                agent, "_apply_pending_internal_events_to_tool_results", None
+            )
+            if callable(_apply_internal_events) and _apply_internal_events(
+                messages, num_tools
+            ):
+                _flush_session_db_after_tool_progress(
+                    agent,
+                    messages,
+                    stage="internal event after cancelled concurrent tool batch",
+                )
+            agent._apply_pending_steer_to_tool_results(messages, num_tools)
+            _finalize_tool_result_batch(
+                agent,
+                cancelled_messages,
+                tool_calls,
+                effective_task_id=effective_task_id,
+                api_call_count=api_call_count,
             )
         return
 
@@ -1806,6 +2000,12 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
         # Text-only servers get a string-safe fallback here so a rejected
         # image tool result never poisons canonical session history.
         # String results pass through unchanged.
+        _cache_post_tool_context_metadata(
+            agent,
+            tool_call_id=tc.id,
+            function_name=name,
+            function_args=args,
+        )
         _tool_content = agent._tool_result_content_for_active_model(name, function_result)
         tool_message = make_tool_result_message(
             name,
@@ -1881,9 +2081,14 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
     # cannot observe a partial batch, while an early drain can be discarded
     # when aggregate budget enforcement replaces that tool result.
     num_tools = len(parsed_calls)
+    turn_tool_msgs = []
     if finalize and num_tools > 0:
         turn_tool_msgs = messages[-num_tools:]
-        enforce_turn_budget(turn_tool_msgs, env=get_active_env(effective_task_id), config=_tool_budget)
+        enforce_turn_budget(
+            turn_tool_msgs,
+            env=get_active_env(effective_task_id),
+            config=_tool_budget,
+        )
 
     # ── Typed internal-event injection ────────────────────────────────
     if finalize and num_tools > 0:
@@ -1903,6 +2108,13 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
     # so the steer marker is never truncated. See steer() for details.
     if finalize and num_tools > 0:
         agent._apply_pending_steer_to_tool_results(messages, num_tools)
+        _finalize_tool_result_batch(
+            agent,
+            turn_tool_msgs,
+            [item[0] for item in parsed_calls],
+            effective_task_id=effective_task_id,
+            api_call_count=api_call_count,
+        )
 
 
 
@@ -1924,6 +2136,80 @@ def _append_cancelled_tool_results(messages: list, tool_calls, *, reason: str) -
             getattr(tc, "id", "") or "",
             effect_disposition="none",
         ))
+
+
+def _finalize_keyboard_interrupt_batch(
+    agent,
+    messages: list,
+    tool_calls,
+    *,
+    current_function_name: str,
+    current_function_args: dict,
+    effective_task_id: str,
+    api_call_count: int,
+    first_already_emitted: bool = True,
+) -> None:
+    """Finalize cancellation rows before a sequential executor re-raises."""
+    calls = list(tool_calls)
+    start = len(messages)
+    _append_cancelled_tool_results(messages, calls, reason="keyboard interrupt")
+    cancelled_messages = messages[start:]
+    if not cancelled_messages:
+        return
+
+    if first_already_emitted:
+        first_id = (getattr(calls[0], "id", "") or "") if calls else ""
+        _cache_post_tool_context_metadata(
+            agent,
+            tool_call_id=first_id,
+            function_name=current_function_name,
+            function_args=current_function_args,
+        )
+    skipped_calls = calls[1:] if first_already_emitted else calls
+    for skipped in skipped_calls:
+        skipped_name = getattr(getattr(skipped, "function", None), "name", "") or "tool"
+        skipped_args, _ = _parse_tool_arguments(
+            getattr(getattr(skipped, "function", None), "arguments", "")
+        )
+        _emit_cancelled_terminal_post_tool_call(
+            agent,
+            function_name=skipped_name,
+            function_args=skipped_args,
+            effective_task_id=effective_task_id,
+            tool_call_id=getattr(skipped, "id", "") or "",
+            start_time=time.time(),
+        )
+
+    if not _flush_session_db_after_tool_progress(
+        agent,
+        messages,
+        stage="keyboard-interrupt tool results",
+    ):
+        return
+    enforce_turn_budget(
+        cancelled_messages,
+        env=get_active_env(effective_task_id),
+        config=_budget_for_agent(agent),
+    )
+    apply_internal_events = getattr(
+        agent, "_apply_pending_internal_events_to_tool_results", None
+    )
+    if callable(apply_internal_events) and apply_internal_events(
+        messages, len(cancelled_messages)
+    ):
+        _flush_session_db_after_tool_progress(
+            agent,
+            messages,
+            stage="internal event after keyboard-interrupt tool batch",
+        )
+    agent._apply_pending_steer_to_tool_results(messages, len(cancelled_messages))
+    _finalize_tool_result_batch(
+        agent,
+        cancelled_messages,
+        calls,
+        effective_task_id=effective_task_id,
+        api_call_count=api_call_count,
+    )
 
 
 def execute_tool_calls_sequential(agent, assistant_message, messages: list, effective_task_id: str, api_call_count: int = 0, *, finalize: bool = True) -> None:
@@ -2504,7 +2790,13 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                     )
                 )
                 _spinner_result = function_result
-            except KeyboardInterrupt:
+            except KeyboardInterrupt as interrupt:
+                function_args = getattr(
+                    interrupt, "_hermes_effective_tool_args", function_args
+                )
+                middleware_trace = getattr(
+                    interrupt, "_hermes_middleware_trace", middleware_trace
+                )
                 function_result = _emit_cancelled_terminal_post_tool_call(
                     agent,
                     function_name=function_name,
@@ -2522,10 +2814,14 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 # Emit a tool result for THIS call and every remaining call in
                 # the batch before re-raising, so the assistant tool-call turn
                 # is never left without matching tool results (alternation).
-                _append_cancelled_tool_results(
+                _finalize_keyboard_interrupt_batch(
+                    agent,
                     messages,
                     assistant_message.tool_calls[i - 1:],
-                    reason="keyboard interrupt",
+                    current_function_name=function_name,
+                    current_function_args=function_args,
+                    effective_task_id=effective_task_id,
+                    api_call_count=api_call_count,
                 )
                 raise
             except Exception as tool_error:
@@ -2585,7 +2881,13 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                         middleware_trace=middleware_trace,
                     )
                 )
-            except KeyboardInterrupt:
+            except KeyboardInterrupt as interrupt:
+                function_args = getattr(
+                    interrupt, "_hermes_effective_tool_args", function_args
+                )
+                middleware_trace = getattr(
+                    interrupt, "_hermes_middleware_trace", middleware_trace
+                )
                 _emit_cancelled_terminal_post_tool_call(
                     agent,
                     function_name=function_name,
@@ -2601,10 +2903,14 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                     pass
                 # Emit a tool result for THIS call and every remaining call in
                 # the batch before re-raising (see interactive branch above).
-                _append_cancelled_tool_results(
+                _finalize_keyboard_interrupt_batch(
+                    agent,
                     messages,
                     assistant_message.tool_calls[i - 1:],
-                    reason="keyboard interrupt",
+                    current_function_name=function_name,
+                    current_function_args=function_args,
+                    effective_task_id=effective_task_id,
+                    api_call_count=api_call_count,
                 )
                 raise
             except Exception as tool_error:
@@ -2707,6 +3013,12 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
 
         # Unwrap _multimodal dicts to an OpenAI-style content list
         # (see parallel path for rationale). String results pass through.
+        _cache_post_tool_context_metadata(
+            agent,
+            tool_call_id=tool_call.id,
+            function_name=function_name,
+            function_args=function_args,
+        )
         _tool_content = agent._tool_result_content_for_active_model(function_name, function_result)
         tool_message = make_tool_result_message(
             function_name,
@@ -2800,8 +3112,14 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
     # only receives this batch after all calls finish, and an early drain can
     # be discarded when aggregate budget enforcement replaces a tool result.
     num_tools_seq = len(assistant_message.tool_calls)
+    turn_tool_msgs_seq = []
     if finalize and num_tools_seq > 0:
-        enforce_turn_budget(messages[-num_tools_seq:], env=get_active_env(effective_task_id), config=_tool_budget)
+        turn_tool_msgs_seq = messages[-num_tools_seq:]
+        enforce_turn_budget(
+            turn_tool_msgs_seq,
+            env=get_active_env(effective_task_id),
+            config=_tool_budget,
+        )
 
     # ── Typed internal-event injection ────────────────────────────────
     if finalize and num_tools_seq > 0:
@@ -2820,6 +3138,13 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
     # applied to sequential execution as well.
     if finalize and num_tools_seq > 0:
         agent._apply_pending_steer_to_tool_results(messages, num_tools_seq)
+        _finalize_tool_result_batch(
+            agent,
+            turn_tool_msgs_seq,
+            assistant_message.tool_calls,
+            effective_task_id=effective_task_id,
+            api_call_count=api_call_count,
+        )
 
 
 
@@ -2854,30 +3179,72 @@ def execute_tool_calls_segmented(agent, assistant_message, messages: list, effec
         _exec_cwd = Path(_active_env.cwd) if _active_env is not None and _active_env.cwd else None
         segments = _plan_tool_batch_segments(assistant_message.tool_calls, execution_cwd=_exec_cwd)
 
-    for kind, calls in segments:
+    completed_calls = []
+    completed_tool_messages = []
+    for segment_index, (kind, calls) in enumerate(segments):
         if getattr(agent, "_incremental_persistence_failed", False):
             return
         segment_message = SimpleNamespace(tool_calls=list(calls))
-        if kind == "parallel":
-            execute_tool_calls_concurrent(
-                agent, segment_message, messages, effective_task_id, api_call_count,
-                finalize=False,
-            )
-        else:
-            execute_tool_calls_sequential(
-                agent, segment_message, messages, effective_task_id, api_call_count,
-                finalize=False,
-            )
+        try:
+            if kind == "parallel":
+                execute_tool_calls_concurrent(
+                    agent, segment_message, messages, effective_task_id, api_call_count,
+                    finalize=False,
+                )
+            else:
+                execute_tool_calls_sequential(
+                    agent, segment_message, messages, effective_task_id, api_call_count,
+                    finalize=False,
+                )
+        except KeyboardInterrupt:
+            if completed_tool_messages:
+                enforce_turn_budget(
+                    completed_tool_messages,
+                    env=get_active_env(effective_task_id),
+                    config=_budget_for_agent(agent),
+                )
+                _finalize_tool_result_batch(
+                    agent,
+                    completed_tool_messages,
+                    completed_calls,
+                    effective_task_id=effective_task_id,
+                    api_call_count=api_call_count,
+                )
+            later_calls = [
+                call
+                for _, later_segment in segments[segment_index + 1:]
+                for call in later_segment
+            ]
+            if later_calls:
+                first = later_calls[0]
+                first_name = getattr(getattr(first, "function", None), "name", "") or "tool"
+                first_args, _ = _parse_tool_arguments(
+                    getattr(getattr(first, "function", None), "arguments", "")
+                )
+                _finalize_keyboard_interrupt_batch(
+                    agent,
+                    messages,
+                    later_calls,
+                    current_function_name=first_name,
+                    current_function_args=first_args,
+                    effective_task_id=effective_task_id,
+                    api_call_count=api_call_count,
+                    first_already_emitted=False,
+                )
+            raise
 
         if getattr(agent, "_incremental_persistence_failed", False):
             return
+        completed_calls.extend(calls)
+        completed_tool_messages.extend(messages[-len(calls):])
 
     # ── Whole-turn finalize (budget + internal events + /steer) ───────
     total_tools = len(assistant_message.tool_calls)
     if total_tools > 0:
         _tool_budget = _budget_for_agent(agent)
+        turn_tool_msgs = messages[-total_tools:]
         enforce_turn_budget(
-            messages[-total_tools:],
+            turn_tool_msgs,
             env=get_active_env(effective_task_id),
             config=_tool_budget,
         )
@@ -2891,6 +3258,13 @@ def execute_tool_calls_segmented(agent, assistant_message, messages: list, effec
                 agent, messages, stage="internal event after segmented tool batch"
             )
         agent._apply_pending_steer_to_tool_results(messages, total_tools)
+        _finalize_tool_result_batch(
+            agent,
+            turn_tool_msgs,
+            assistant_message.tool_calls,
+            effective_task_id=effective_task_id,
+            api_call_count=api_call_count,
+        )
 
 
 __all__ = [

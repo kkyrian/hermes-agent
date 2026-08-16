@@ -10135,6 +10135,32 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
 
         return self._execute_write(_do)
 
+    def set_tool_result_content(
+        self, session_id: str, tool_call_id: str, content: Any
+    ) -> int:
+        """Replace one active tool-result row after final context budgeting.
+
+        Tool results are inserted incrementally before aggregate turn-budget
+        enforcement. If budgeting or a post-budget plugin context changes the
+        provider-bound content afterward, the durable row must be updated to
+        those exact bytes or a resumed session will replay a different prefix.
+        ``tool_call_id`` is the stable per-turn identity; returns 0 or 1.
+        """
+        encoded = self._encode_content(content)
+
+        def _do(conn):
+            cursor = conn.execute(
+                "UPDATE messages SET content = ? WHERE id = ("
+                "SELECT id FROM messages "
+                "WHERE session_id = ? AND role = 'tool' AND tool_call_id = ? "
+                "AND active = 1 ORDER BY id DESC LIMIT 1"
+                ")",
+                (encoded, session_id, tool_call_id),
+            )
+            return cursor.rowcount
+
+        return self._execute_write(_do)
+
     def get_messages(
         self,
         session_id: str,
