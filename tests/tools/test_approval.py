@@ -697,6 +697,9 @@ class TestExpandedHardlineFloor:
             "shred -n 1 /dev/disk/by-id/wwn-0x1234",
             "cp image.raw /dev/sda 2>/tmp/cp.log",
             "find -H /home -delete",
+            "find -D search /home -delete",
+            "find -O3 /root -delete",
+            "find -- /etc -delete",
         ),
     )
     def test_unrecoverable_equivalents_are_hardline_blocked(self, command):
