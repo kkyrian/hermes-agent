@@ -705,6 +705,9 @@ class TestExpandedHardlineFloor:
             "find /tmp/../home -delete",
             "find /tmp /home -delete",
             "find /tmp /etc -depth -delete",
+            'find "$HOME/" -delete',
+            'find "${HOME}/" -delete',
+            "find ~/ -delete",
             "zfs destroy -f -r tank/home",
             "zfs destroy -f -R tank/home",
             "command wipefs -a /dev/sda",
@@ -726,6 +729,9 @@ class TestExpandedHardlineFloor:
             "wipefs /dev/sda",
             "wipefs --no-act --all /dev/sda",
             "lvdisplay vg/data",
+            "zpool destroy --help",
+            "lvremove --help",
+            "vgremove --test vg0",
         ),
     )
     def test_recoverable_or_read_only_neighbors_are_not_hardline(self, command):
