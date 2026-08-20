@@ -3593,6 +3593,7 @@ def _defer_completion_delivery(
             "identity": identity,
             "generation": generation,
             "source": source,
+            "fallback_queued": False,
             "siblings": [],
         })
 
@@ -3651,16 +3652,18 @@ def _settle_deferred_completion_deliveries(
             if source is None:
                 remaining.append(record)
                 continue
-            event = MessageEvent(
-                text=record["text"],
-                source=source,
-                internal=True,
-                metadata={
-                    "internal_event_kind": "subagent_completion",
-                    "delivery": "deferred_generation_fallback",
-                },
-            )
-            _queue_typed_internal_followup(runner, session_key, event)
+            if not record.get("fallback_queued"):
+                event = MessageEvent(
+                    text=record["text"],
+                    source=source,
+                    internal=True,
+                    metadata={
+                        "internal_event_kind": "subagent_completion",
+                        "delivery": "deferred_generation_fallback",
+                    },
+                )
+                _queue_typed_internal_followup(runner, session_key, event)
+                record["fallback_queued"] = True
         elif not turn_completed and not exact_leftover:
             # The admitting turn did not return and its exact payload was not
             # harvested into the fallback queue. Keep the durable claim for
