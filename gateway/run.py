@@ -3759,6 +3759,11 @@ async def _settle_deferred_completion_deliveries(
                 )
                 _queue_typed_internal_followup(runner, session_key, event)
                 record["fallback_queued"] = True
+                # The fallback queue is process-local.  Keep the durable claim
+                # alive until a later turn has actually dequeued and consumed
+                # this event; a crash before then must leave recovery evidence.
+                remaining.append(record)
+                continue
         elif not turn_completed and not exact_leftover:
             # The admitting turn did not return and its exact payload was not
             # harvested into the fallback queue. Keep the durable claim for

@@ -18,6 +18,7 @@ import pytest
 from gateway.config import Platform
 from gateway.run import (
     GatewayRunner,
+    _dequeue_typed_internal_followup,
     _renew_deferred_completion_claim,
     _settle_deferred_completion_deliveries,
 )
@@ -279,6 +280,15 @@ def test_later_turn_requeues_deferred_payload_before_ack(monkeypatch):
     queued = runner._typed_internal_followups[session_key]
     assert [item.text for item in queued] == ["old evidence"]
     assert queued[0].metadata["delivery"] == "deferred_generation_fallback"
+    assert acknowledgements == []
+    assert runner._deferred_completion_deliveries[session_key][0]["fallback_queued"]
+
+    # The next turn dequeues the typed follow-up, then settlement may retire
+    # the durable claim because the evidence has actually been consumed.
+    assert _dequeue_typed_internal_followup(runner, session_key).text == "old evidence"
+    asyncio.run(_settle_deferred_completion_deliveries(
+        runner, session_key, 5, {}, turn_completed=True
+    ))
     assert acknowledgements == ["deleg_old_turn"]
 
 

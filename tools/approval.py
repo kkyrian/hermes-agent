@@ -553,7 +553,7 @@ HARDLINE_PATTERNS = [
     (_CMDPOS + r'mkfs(\.[a-z0-9]+)?\b', "format filesystem (mkfs)"),
     # Raw block device overwrites (dd + redirection)
     (_CMDPOS + r'dd\b[^\n]*\bof=/dev/(sd|nvme|hd|mmcblk|vd|xvd)[a-z0-9]*', "dd to raw block device"),
-    (_CMDPOS + rf'(?:wipefs|blkdiscard|shred)\b[^\n]*["\']?{_HARDLINE_BLOCK_DEVICE}\b', "erase or discard an entire raw block device"),
+    (_CMDPOS + rf'(?:blkdiscard|shred)\b[^\n]*["\']?{_HARDLINE_BLOCK_DEVICE}\b', "erase or discard an entire raw block device"),
     (_CMDPOS + rf'sgdisk\b[^\n]*(?:--zap-all|-Z)\b[^\n]*["\']?{_HARDLINE_BLOCK_DEVICE}\b', "erase a raw block-device partition table"),
     (_CMDPOS + rf'nvme\s+(?:format|sanitize)\b[^\n]*["\']?{_HARDLINE_BLOCK_DEVICE}\b', "destructive NVMe format/sanitize"),
     (_CMDPOS + rf'(?:cp\b[^\n]*\s+["\']?{_HARDLINE_BLOCK_DEVICE}["\']?{_HARDLINE_POST_COMMAND_REDIRECTIONS}\s*(?:$|\n|[;|&)])|tee\b[^\n]*["\']?{_HARDLINE_BLOCK_DEVICE}\b)', "write to an entire raw block device"),
@@ -564,7 +564,7 @@ HARDLINE_PATTERNS = [
     # unconditional.  Narrow dataset/snapshot deletion belongs in the normal
     # dangerous-command approval tier below; ``zpool destroy`` removes the
     # complete storage pool and remains unconditional.
-    (_CMDPOS + r'(?:zpool\s+destroy|zfs\s+destroy\s+-[^\s]*[rR][^\s]*\s+|(?:lvremove|vgremove|pvremove))\b', "destroy a ZFS or LVM storage layer"),
+    (_CMDPOS + r'(?:zpool\s+destroy|(?:lvremove|vgremove|pvremove))\b', "destroy a ZFS or LVM storage layer"),
     # Fork bomb (classic shell form)
     (r':\(\)\s*\{\s*:\s*\|\s*:\s*&\s*\}\s*;\s*:', "fork bomb"),
     # Kill every process on the system
@@ -594,26 +594,79 @@ HARDLINE_PATTERNS_COMPILED = [
 _HARDLINE_FIND_CANDIDATE_RE = re.compile(
     _CMDPOS
     + r'find\s+'
-    + _HARDLINE_FIND_LEADING_OPTIONS
-    + r'(?P<path>"[^"]*"|\'[^\']*\'|[^\s;|&)]+)[^\n]*-delete\b',
+    + r'(?P<args>[^\n;|&]*?)-delete\b',
     _RE_FLAGS,
+)
+_HARDLINE_WIPEFS_CANDIDATE_RE = re.compile(
+    _CMDPOS + r'wipefs\b(?P<args>[^\n;|&]*)', _RE_FLAGS
+)
+_HARDLINE_ZFS_DESTROY_CANDIDATE_RE = re.compile(
+    _CMDPOS + r'zfs\s+destroy\b(?P<args>[^\n;|&]*)', _RE_FLAGS
 )
 
 
-def _has_lexically_protected_find_delete(command: str) -> bool:
-    """Detect protected find roots after lexical ``.``/``..`` collapse."""
+def _is_protected_find_path(path: str) -> bool:
     protected = {"/", "/home", "/root", "/etc", "/usr", "/var", "/bin", "/sbin", "/boot", "/lib"}
+    if path in {"~", "$HOME", "${HOME}"}:
+        return True
+    if not path.startswith("/"):
+        return False
+    return "/" + posixpath.normpath(path).lstrip("/") in protected
+
+
+def _has_lexically_protected_find_delete(command: str) -> bool:
+    """Detect any protected find root after lexical ``.``/``..`` collapse."""
     for match in _HARDLINE_FIND_CANDIDATE_RE.finditer(command):
-        path = match.group("path")
-        if len(path) >= 2 and path[0] == path[-1] and path[0] in "\"'":
-            path = path[1:-1]
-        if path in {"~", "$HOME", "${HOME}"}:
-            return True
-        if not path.startswith("/"):
+        try:
+            tokens = shlex.split(match.group("args"), posix=True)
+        except ValueError:
             continue
-        normalized = "/" + posixpath.normpath(path).lstrip("/")
-        if normalized in protected:
+        index = 0
+        while index < len(tokens):
+            token = tokens[index]
+            if token in {"-H", "-L", "-P", "--"} or token.startswith("-O"):
+                index += 1
+                continue
+            if token == "-D" and index + 1 < len(tokens):
+                index += 2
+                continue
+            break
+        for path in tokens[index:]:
+            if path.startswith("-") or path in {"!", "("}:
+                break
+            if _is_protected_find_path(path):
+                return True
+    return False
+
+
+def _has_destructive_wipefs(command: str) -> bool:
+    """Block raw-device signature erasure while permitting read-only probes."""
+    for match in _HARDLINE_WIPEFS_CANDIDATE_RE.finditer(command):
+        try:
+            tokens = shlex.split(match.group("args"), posix=True)
+        except ValueError:
+            continue
+        if any(token in {"-n", "--no-act"} for token in tokens):
+            continue
+        if not any(token == "--all" or (token.startswith("-") and "a" in token[1:]) for token in tokens):
+            continue
+        if any(re.fullmatch(_HARDLINE_BLOCK_DEVICE, token, re.IGNORECASE) for token in tokens):
             return True
+    return False
+
+
+def _has_recursive_zfs_destroy(command: str) -> bool:
+    """Detect recursive ZFS subtree destruction across combined/separate flags."""
+    for match in _HARDLINE_ZFS_DESTROY_CANDIDATE_RE.finditer(command):
+        try:
+            tokens = shlex.split(match.group("args"), posix=True)
+        except ValueError:
+            continue
+        for token in tokens:
+            if not token.startswith("-") or token == "--":
+                break
+            if "r" in token[1:].lower():
+                return True
     return False
 
 
@@ -728,6 +781,10 @@ def detect_hardline_command(command: str) -> tuple:
         variant_lower = command_variant.lower()
         if _has_lexically_protected_find_delete(variant_lower):
             return (True, "recursive find deletion of root/system/home")
+        if _has_destructive_wipefs(variant_lower):
+            return (True, "erase or discard an entire raw block device")
+        if _has_recursive_zfs_destroy(variant_lower):
+            return (True, "destroy a ZFS or LVM storage layer")
         for pattern_re, description in HARDLINE_PATTERNS_COMPILED:
             if pattern_re.search(variant_lower):
                 return (True, description)
