@@ -394,6 +394,45 @@ def test_deferred_claim_renews_attached_siblings(monkeypatch):
     ]
 
 
+def test_settlement_preserves_record_deferred_during_async_classification(monkeypatch):
+    runner = _runner(SimpleNamespace(handle_message=AsyncMock()))
+    session_key = "agent:main:telegram:dm:12345:678"
+    old = {
+        "text": "old completion",
+        "delegation_id": "deleg_old",
+        "claim_id": "claim-old",
+        "generation": 1,
+        "parent_session_id": "old-parent",
+        "source": SessionSource(
+            platform=Platform.TELEGRAM, chat_id="12345", chat_type="dm"
+        ),
+        "siblings": [],
+    }
+    new = {
+        "text": "new completion",
+        "delegation_id": "deleg_new",
+        "claim_id": "claim-new",
+        "generation": 2,
+        "parent_session_id": "new-parent",
+        "source": old["source"],
+        "siblings": [],
+    }
+    runner._deferred_completion_deliveries = {session_key: [old]}
+
+    async def _classify(_parent_session_id):
+        runner._deferred_completion_deliveries[session_key].append(new)
+        return "retry"
+
+    runner._classify_completion_target = AsyncMock(side_effect=_classify)
+    asyncio.run(
+        _settle_deferred_completion_deliveries(
+            runner, session_key, 2, {}, turn_completed=True
+        )
+    )
+
+    assert runner._deferred_completion_deliveries[session_key] == [old, new]
+
+
 def test_failed_deferred_ack_does_not_queue_duplicate_fallback(monkeypatch):
     from tools import async_delegation
 

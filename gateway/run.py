@@ -3823,8 +3823,12 @@ async def _settle_deferred_completion_deliveries(
 
     with lock:
         pending = getattr(runner, "_deferred_completion_deliveries", {})
-        if remaining:
-            pending[session_key] = remaining
+        current = pending.get(session_key, [])
+        snapshot_ids = {id(record) for record in records}
+        newly_deferred = [record for record in current if id(record) not in snapshot_ids]
+        merged = [*remaining, *newly_deferred]
+        if merged:
+            pending[session_key] = merged
         else:
             pending.pop(session_key, None)
 

@@ -83,6 +83,22 @@ def test_manifest_publication_failure_does_not_mutate_config(tmp_path):
     assert config.read_text(encoding="utf-8") == original
 
 
+def test_manifest_write_tolerates_unsupported_directory_fsync(monkeypatch, tmp_path):
+    target = tmp_path / "manifest.json"
+    real_open = MOD.os.open
+
+    def _open(path, flags, *args, **kwargs):
+        if Path(path) == tmp_path:
+            raise OSError("directory descriptors unsupported")
+        return real_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(MOD.os, "open", _open)
+
+    MOD._atomic_json_write(target, {"ok": True})
+
+    assert json.loads(target.read_text(encoding="utf-8")) == {"ok": True}
+
+
 def test_live_profile_requires_two_explicit_flags(monkeypatch, tmp_path):
     live_root = tmp_path / ".hermes" / "profiles"
     home = live_root / "example"
