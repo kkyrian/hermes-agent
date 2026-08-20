@@ -512,7 +512,15 @@ _HARDLINE_SYSTEM_DIRS = (
 # catching `rm -rf "/"`.
 _RM_FLAG_PREFIX = _CMDPOS + r'rm\s+(-[^\s]*\s+)*'
 
-_HARDLINE_BLOCK_DEVICE = r'/dev/(?:sd[a-z][a-z0-9]*|hd[a-z][a-z0-9]*|vd[a-z][a-z0-9]*|xvd[a-z][a-z0-9]*|mmcblk\d+(?:p\d+)?|nvme\d+n\d+(?:p\d+)?)'
+_HARDLINE_BLOCK_DEVICE = (
+    r'/dev/(?:sd[a-z][a-z0-9]*|hd[a-z][a-z0-9]*|vd[a-z][a-z0-9]*|'
+    r'xvd[a-z][a-z0-9]*|mmcblk\d+(?:p\d+)?|nvme\d+n\d+(?:p\d+)?|'
+    r'dm-\d+|mapper/[a-z0-9_.+:-]+|disk/by-(?:id|path|uuid|partuuid|label|partlabel)/'
+    r'[a-z0-9_.+:@-]+)'
+)
+_HARDLINE_POST_COMMAND_REDIRECTIONS = (
+    r'(?:(?:\s+(?:\d*(?:>>?|<<?)|&>>?)\s*(?:&\d+|[^\s;|&)]+))*)'
+)
 _HARDLINE_FIND_PATH = _hardline_rm_path(
     r'/|' + _HARDLINE_SYSTEM_DIRS + r'|~|\$\{?HOME\}?'
 )
@@ -544,9 +552,9 @@ HARDLINE_PATTERNS = [
     (_CMDPOS + rf'(?:wipefs|blkdiscard|shred)\b[^\n]*["\']?{_HARDLINE_BLOCK_DEVICE}\b', "erase or discard an entire raw block device"),
     (_CMDPOS + rf'sgdisk\b[^\n]*(?:--zap-all|-Z)\b[^\n]*["\']?{_HARDLINE_BLOCK_DEVICE}\b', "erase a raw block-device partition table"),
     (_CMDPOS + rf'nvme\s+(?:format|sanitize)\b[^\n]*["\']?{_HARDLINE_BLOCK_DEVICE}\b', "destructive NVMe format/sanitize"),
-    (_CMDPOS + rf'(?:cp\b[^\n]*\s+["\']?{_HARDLINE_BLOCK_DEVICE}["\']?\s*(?:$|\n)|tee\b[^\n]*["\']?{_HARDLINE_BLOCK_DEVICE}\b)', "write to an entire raw block device"),
+    (_CMDPOS + rf'(?:cp\b[^\n]*\s+["\']?{_HARDLINE_BLOCK_DEVICE}["\']?{_HARDLINE_POST_COMMAND_REDIRECTIONS}\s*(?:$|\n|[;|&)])|tee\b[^\n]*["\']?{_HARDLINE_BLOCK_DEVICE}\b)', "write to an entire raw block device"),
     # Non-rm spellings of the same unrecoverable recursive deletion floor.
-    (_CMDPOS + r'find\s+' + _HARDLINE_FIND_PATH + r'[^\n]*-delete\b', "recursive find deletion of root/system/home"),
+    (_CMDPOS + r'find\s+(?:-[^\s]+\s+)*' + _HARDLINE_FIND_PATH + r'[^\n]*-delete\b', "recursive find deletion of root/system/home"),
     # Whole storage-pool / volume destruction has no ordinary recovery path.
     (_CMDPOS + r'(?:(?:zpool|zfs)\s+destroy|(?:lvremove|vgremove|pvremove))\b', "destroy a ZFS or LVM storage layer"),
     # Fork bomb (classic shell form)

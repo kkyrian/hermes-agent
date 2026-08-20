@@ -3568,6 +3568,8 @@ def _defer_completion_delivery(
     delegation_id: str,
     claim_id: str,
     identity: Optional[tuple[str, str, object]],
+    generation: int,
+    source: Any,
 ) -> None:
     """Retain a durable completion claim until the busy turn consumes it.
 
@@ -3589,6 +3591,8 @@ def _defer_completion_delivery(
             "delegation_id": delegation_id,
             "claim_id": claim_id,
             "identity": identity,
+            "generation": generation,
+            "source": source,
             "siblings": [],
         })
 
@@ -3612,7 +3616,14 @@ def _attach_deferred_completion_siblings(
     return False
 
 
-def _settle_deferred_completion_deliveries(runner: Any, session_key: str) -> None:
+def _settle_deferred_completion_deliveries(
+    runner: Any,
+    session_key: str,
+    run_generation: int,
+    result: Optional[Dict[str, Any]],
+    *,
+    turn_completed: bool,
+) -> None:
     """Acknowledge mailbox deliveries after consumption or fallback queuing."""
     lock = getattr(runner, "_completion_delivery_lock", None)
     if lock is None:
@@ -3628,7 +3639,35 @@ def _settle_deferred_completion_deliveries(runner: Any, session_key: str) -> Non
     )
 
     remaining = []
+    leftovers = (
+        result.get("pending_internal_events", [])
+        if isinstance(result, dict) else []
+    )
     for record in records:
+        matching_turn = record.get("generation") == run_generation
+        exact_leftover = record.get("text") in leftovers
+        if not matching_turn:
+            source = record.get("source")
+            if source is None:
+                remaining.append(record)
+                continue
+            event = MessageEvent(
+                text=record["text"],
+                source=source,
+                internal=True,
+                metadata={
+                    "internal_event_kind": "subagent_completion",
+                    "delivery": "deferred_generation_fallback",
+                },
+            )
+            _queue_typed_internal_followup(runner, session_key, event)
+        elif not turn_completed and not exact_leftover:
+            # The admitting turn did not return and its exact payload was not
+            # harvested into the fallback queue. Keep the durable claim for
+            # lease expiry/replay rather than letting another turn ack it.
+            remaining.append(record)
+            continue
+
         primary_done = not record.get("claim_id")
         if not primary_done:
             try:
@@ -10520,6 +10559,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     if bool(_enqueue_internal(_internal_text)):
                         _internal_metadata["durable_delivery_deferred"] = True
                         _internal_metadata["durable_delivery_session_key"] = session_key
+                        _internal_metadata["durable_delivery_generation"] = int(
+                            _busy_state.persistent.run_generation
+                        )
                         logger.info(
                             "Admitted subagent completion to active parent mailbox: session=%s",
                             session_key,
@@ -25422,6 +25464,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 evt["_durable_delivery_deferred_session_key"] = str(
                     metadata.get("durable_delivery_session_key") or ""
                 )
+                evt["_durable_delivery_deferred_generation"] = int(
+                    metadata.get("durable_delivery_generation") or 0
+                )
+                evt["_durable_delivery_source"] = source
             return True
         except Exception as e:
             logger.error("Watch notification injection error: %s", e)
@@ -25642,6 +25688,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     delegation_id=durable_delegation_id,
                     claim_id=durable_claim_id,
                     identity=identity,
+                    generation=int(
+                        evt.get("_durable_delivery_deferred_generation") or 0
+                    ),
+                    source=evt.get("_durable_delivery_source"),
                 )
                 logger.info(
                     "Deferred durable async completion acknowledgement until "
@@ -29658,8 +29708,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # into the typed idle queue.  Only now is the durable producer row
             # safe to acknowledge.  Timeout/no-result paths intentionally keep
             # the claim pending for lease expiry and replay.
-            if result_holder[0] is not None and agent_holder[0] is not None:
-                _settle_deferred_completion_deliveries(self, session_key)
+            if agent_holder[0] is not None:
+                _settle_deferred_completion_deliveries(
+                    self,
+                    session_key,
+                    int(run_generation or 0),
+                    result,
+                    turn_completed=result_holder[0] is not None,
+                )
 
             # Leftover /steer: if a steer arrived after the last tool batch
             # (e.g. during the final API call), the agent couldn't inject it
