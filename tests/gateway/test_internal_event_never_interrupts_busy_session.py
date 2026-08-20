@@ -49,6 +49,7 @@ from gateway.run import (  # noqa: E402
     _merge_agent_undelivered_internal_events,
     _pending_internal_event_from_result,
     _queue_typed_internal_followup,
+    _queued_followup_was_interrupted,
 )
 from run_agent import AIAgent  # noqa: E402
 
@@ -272,6 +273,19 @@ def test_abnormal_turn_leftover_keeps_typed_internal_idle_delivery() -> None:
     assert event.text.count("SUBAGENT RESULT") == 2
     assert event.metadata["internal_event_kind"] == "subagent_completion"
     assert event.metadata["delivery"] == "turn_finalize_fallback"
+
+
+def test_completed_turn_with_typed_followup_is_not_interrupted() -> None:
+    """A completion after the final boundary must not suppress first delivery."""
+    result = {"interrupted": False, "final_response": "first response"}
+
+    assert _queued_followup_was_interrupted(result) is False
+
+
+def test_real_interrupt_still_suppresses_queued_first_delivery() -> None:
+    result = {"interrupted": True, "final_response": "interrupted noise"}
+
+    assert _queued_followup_was_interrupted(result) is True
 
 
 def test_gateway_harvests_exception_path_internal_events() -> None:

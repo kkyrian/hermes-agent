@@ -159,6 +159,23 @@ class SpillIfOversizedTests(unittest.TestCase):
         self.assertFalse(result["ok"])
         self.assertEqual(list(external.iterdir()), [])
 
+    def test_generic_spill_allows_trusted_base_with_symlinked_ancestor(self):
+        actual = Path(self.tmpdir) / "actual"
+        alias = Path(self.tmpdir) / "alias"
+        actual.mkdir()
+        alias.symlink_to(actual, target_is_directory=True)
+
+        result = hos.write_spill_file(
+            "secret",
+            session_id="shared",
+            directory_override=str(alias / "spills"),
+        )
+
+        self.assertTrue(result["ok"], result["error"])
+        saved = Path(result["path"])
+        self.assertEqual(saved.read_text(encoding="utf-8"), "secret")
+        self.assertTrue(saved.is_relative_to(actual.resolve()))
+
     def test_portable_profile_local_spill_preserves_exact_bytes(self):
         profile = Path(self.tmpdir) / "profile-portable"
         profile.mkdir()
