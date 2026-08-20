@@ -808,9 +808,9 @@ def detect_hardline_command(command: str) -> tuple:
     _, malformed_grep = _grep_safe_detection_variant(normalized)
     if malformed_grep:
         return (True, _MALFORMED_EXEC_DESCRIPTION)
-    if _has_unquoted_raw_device_redirection(command):
-        return (True, "redirect to raw block device")
     for command_variant in _command_detection_variants(command):
+        if _has_unquoted_raw_device_redirection(command_variant):
+            return (True, "redirect to raw block device")
         variant_lower = command_variant.lower()
         if _has_lexically_protected_find_delete(variant_lower):
             return (True, "recursive find deletion of root/system/home")

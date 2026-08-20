@@ -3570,6 +3570,58 @@ def _queue_typed_internal_followup(runner: Any, session_key: str, event: Message
         queues.setdefault(session_key, []).append(event)
 
 
+def _tag_deferred_completion_fallback(
+    event: MessageEvent,
+    record: Dict[str, Any],
+) -> None:
+    """Bind a process-local fallback event to its durable delivery claim."""
+    metadata = getattr(event, "metadata", None)
+    if not isinstance(metadata, dict):
+        metadata = {}
+        event.metadata = metadata
+    claims = metadata.setdefault("durable_completion_claims", [])
+    claim = {
+        "delegation_id": str(record.get("delegation_id") or ""),
+        "claim_id": str(record.get("claim_id") or ""),
+    }
+    if claim not in claims:
+        claims.append(claim)
+
+
+def _mark_deferred_completion_fallback_consumed(
+    runner: Any,
+    session_key: str,
+    event: Optional[MessageEvent],
+) -> bool:
+    """Mark claims consumed only after their recursive fallback turn returns."""
+    metadata = getattr(event, "metadata", None)
+    claims = metadata.get("durable_completion_claims") if isinstance(metadata, dict) else None
+    if not isinstance(claims, list) or not claims:
+        return False
+    keys = {
+        (str(claim.get("delegation_id") or ""), str(claim.get("claim_id") or ""))
+        for claim in claims
+        if isinstance(claim, dict)
+    }
+    lock = getattr(runner, "_completion_delivery_lock", None)
+    if lock is None:
+        return False
+    marked = False
+    with lock:
+        records = getattr(runner, "_deferred_completion_deliveries", {}).get(
+            session_key, []
+        )
+        for record in records:
+            key = (
+                str(record.get("delegation_id") or ""),
+                str(record.get("claim_id") or ""),
+            )
+            if key in keys:
+                record["fallback_consumed"] = True
+                marked = True
+    return marked
+
+
 def _defer_completion_delivery(
     runner: Any,
     session_key: str,
@@ -3762,6 +3814,7 @@ async def _settle_deferred_completion_deliveries(
                         "delivery": "deferred_generation_fallback",
                     },
                 )
+                _tag_deferred_completion_fallback(event, record)
                 _queue_typed_internal_followup(runner, session_key, event)
                 record["fallback_queued"] = True
                 # The fallback queue is process-local.  Keep the durable claim
@@ -3774,6 +3827,12 @@ async def _settle_deferred_completion_deliveries(
             # follow-up queue. Keep the durable claim until that recursive
             # turn consumes it so a crash remains recoverable.
             record["fallback_queued"] = True
+            remaining.append(record)
+            continue
+        elif record.get("fallback_queued") and not record.get("fallback_consumed"):
+            # A user/steer turn can run ahead of the queued internal fallback
+            # with the same generation.  Do not retire the durable claim until
+            # the exact typed fallback has run and returned.
             remaining.append(record)
             continue
         elif not turn_completed:
@@ -29820,6 +29879,22 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     run_generation is None
                     or self._is_session_run_current(session_key, run_generation)
                 ):
+                    _leftover_texts = result.get("pending_internal_events", [])
+                    _delivery_lock = getattr(
+                        self, "_completion_delivery_lock", None
+                    )
+                    if _delivery_lock is not None:
+                        with _delivery_lock:
+                            for _record in getattr(
+                                self, "_deferred_completion_deliveries", {}
+                            ).get(session_key, []):
+                                if (
+                                    _record.get("generation") == run_generation
+                                    and _record.get("text") in _leftover_texts
+                                ):
+                                    _tag_deferred_completion_fallback(
+                                        _leftover_internal_event, _record
+                                    )
                     _queue_typed_internal_followup(
                         self, session_key, _leftover_internal_event
                     )
@@ -30136,6 +30211,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         pending_event
                     ),
                 )
+                if _mark_deferred_completion_fallback_consumed(
+                    self, session_key, pending_event
+                ):
+                    await _settle_deferred_completion_deliveries(
+                        self,
+                        session_key,
+                        int(run_generation or 0),
+                        {},
+                        turn_completed=True,
+                    )
                 return _preserve_queued_followup_history_offset(result, followup_result)
         finally:
             # Stop progress sender, interrupt monitor, and notification task
