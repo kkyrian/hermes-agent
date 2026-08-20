@@ -210,6 +210,12 @@ def test_busy_mailbox_admission_defers_durable_ack_until_turn_settlement(
 
     async def _admit(_text, admitted_event):
         admitted_event["_durable_delivery_deferred_session_key"] = session_key
+        admitted_event["_durable_delivery_deferred_generation"] = 7
+        admitted_event["_durable_delivery_source"] = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="12345",
+            chat_type="dm",
+        )
         return True
 
     monkeypatch.setattr(runner, "_inject_watch_notification", _admit)
@@ -221,12 +227,55 @@ def test_busy_mailbox_admission_defers_durable_ack_until_turn_settlement(
     assert event["_durable_delivery_deferred_session_key"] == session_key
     assert runner._completion_deliveries_inflight
 
-    _settle_deferred_completion_deliveries(runner, session_key)
+    _settle_deferred_completion_deliveries(
+        runner, session_key, 7, {}, turn_completed=True
+    )
 
     assert len(acknowledgements) == 1
     assert acknowledgements[0][0] == "deleg_busy_ack"
     assert not runner._completion_deliveries_inflight
     assert runner._completion_deliveries_delivered
+
+
+def test_later_turn_requeues_deferred_payload_before_ack(monkeypatch):
+    from tools import async_delegation
+
+    runner = _runner(SimpleNamespace(handle_message=AsyncMock()))
+    runner._typed_internal_followups = {}
+    event = _async_event("deleg_old_turn")
+    session_key = event["session_key"]
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="12345",
+        chat_type="dm",
+    )
+    acknowledgements = []
+    monkeypatch.setattr(
+        async_delegation, "claim_completion_delivery", lambda *_args: True
+    )
+    monkeypatch.setattr(
+        async_delegation,
+        "complete_completion_delivery",
+        lambda delegation_id, _claim_id: acknowledgements.append(delegation_id) or True,
+    )
+
+    async def _admit(_text, admitted_event):
+        admitted_event["_durable_delivery_deferred_session_key"] = session_key
+        admitted_event["_durable_delivery_deferred_generation"] = 3
+        admitted_event["_durable_delivery_source"] = source
+        return True
+
+    monkeypatch.setattr(runner, "_inject_watch_notification", _admit)
+    asyncio.run(runner._deliver_completion_notification("old evidence", event))
+
+    _settle_deferred_completion_deliveries(
+        runner, session_key, 4, {}, turn_completed=True
+    )
+
+    queued = runner._typed_internal_followups[session_key]
+    assert [item.text for item in queued] == ["old evidence"]
+    assert queued[0].metadata["delivery"] == "deferred_generation_fallback"
+    assert acknowledgements == ["deleg_old_turn"]
 
 
 def _persist_pending_completion(event):

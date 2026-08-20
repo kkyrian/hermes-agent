@@ -692,6 +692,11 @@ class TestExpandedHardlineFloor:
             "lvremove -y vg/data",
             "vgremove vg0",
             "pvremove /dev/sdb",
+            "wipefs -a /dev/mapper/vg-lv",
+            "blkdiscard /dev/dm-0",
+            "shred -n 1 /dev/disk/by-id/wwn-0x1234",
+            "cp image.raw /dev/sda 2>/tmp/cp.log",
+            "find -H /home -delete",
         ),
     )
     def test_unrecoverable_equivalents_are_hardline_blocked(self, command):
