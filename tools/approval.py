@@ -560,10 +560,11 @@ HARDLINE_PATTERNS = [
     # Non-rm spellings of the same unrecoverable recursive deletion floor.
     (_CMDPOS + r'find\s+' + _HARDLINE_FIND_LEADING_OPTIONS + _HARDLINE_FIND_PATH + r'[^\n]*-delete\b', "recursive find deletion of root/system/home"),
     # Whole storage-pool / volume destruction has no ordinary recovery path.
-    # ``zfs destroy`` targets datasets or snapshots and belongs in the normal
+    # A recursive ``zfs destroy`` removes an entire dataset subtree and stays
+    # unconditional.  Narrow dataset/snapshot deletion belongs in the normal
     # dangerous-command approval tier below; ``zpool destroy`` removes the
     # complete storage pool and remains unconditional.
-    (_CMDPOS + r'(?:zpool\s+destroy|(?:lvremove|vgremove|pvremove))\b', "destroy a ZFS or LVM storage layer"),
+    (_CMDPOS + r'(?:zpool\s+destroy|zfs\s+destroy\s+-[^\s]*[rR][^\s]*\s+|(?:lvremove|vgremove|pvremove))\b', "destroy a ZFS or LVM storage layer"),
     # Fork bomb (classic shell form)
     (r':\(\)\s*\{\s*:\s*\|\s*:\s*&\s*\}\s*;\s*:', "fork bomb"),
     # Kill every process on the system

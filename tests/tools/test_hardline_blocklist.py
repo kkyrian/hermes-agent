@@ -110,6 +110,8 @@ _HARDLINE_BLOCK = [
     # Whole storage layers remain unconditional.
     "zpool destroy tank",
     "sudo zpool destroy tank",
+    "zfs destroy -r tank/data",
+    "zfs destroy -Rf tank/data",
     "lvremove vg/data",
     # Compound / subshell variants
     "ls; reboot",
