@@ -5,6 +5,7 @@ from types import SimpleNamespace
 
 import run_agent as _ra
 from agent.conversation_loop import (
+    _close_stream_before_internal_followup,
     _inject_pending_internal_events_before_stop,
     _inject_pending_internal_events_pre_api,
     _inject_pending_steer_pre_api,
@@ -389,6 +390,19 @@ def test_final_boundary_uses_normal_budget_when_available() -> None:
         {"role": "assistant", "content": "premature final"},
     )
     assert getattr(agent, "_budget_grace_call") is False
+
+
+def test_streamed_final_is_closed_before_internal_event_resampling() -> None:
+    agent = _bare_agent()
+    boundaries = []
+    agent.stream_delta_callback = boundaries.append
+    agent._interim_content_was_streamed = lambda text: text == "visible final"
+    agent._stream_needs_break = False
+
+    _close_stream_before_internal_followup(agent, "visible final")
+
+    assert boundaries == [None]
+    assert agent._stream_needs_break is True
 
 
 def test_final_boundary_internal_context_is_durable_but_display_hidden() -> None:

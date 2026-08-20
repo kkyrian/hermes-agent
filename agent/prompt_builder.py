@@ -2114,9 +2114,18 @@ def _build_skills_system_prompt_inner(
                         available_toolsets,
                     ):
                         continue
+                    exposure = _skill_prompt_exposure(
+                        fm_name, exposure_policy, available_toolsets
+                    )
+                    if exposure == "hidden":
+                        continue
+                    project_desc = (
+                        "" if exposure == "name"
+                        else f"[project] {entry['description']}".strip()
+                    )
                     project_names.add(fm_name)
                     skills_by_category.setdefault(entry["category"], []).append(
-                        (fm_name, f"[project] {entry['description']}".strip())
+                        (fm_name, project_desc)
                     )
                 except Exception as e:
                     logger.debug("Error reading project skill %s: %s", skill_file, e)

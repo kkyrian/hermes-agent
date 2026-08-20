@@ -152,6 +152,8 @@ async def test_subagent_completion_enters_busy_parent_mailbox() -> None:
 
     assert handled is True
     parent.enqueue_internal_event.assert_called_once_with(event.text)
+    assert event.metadata["durable_delivery_deferred"] is True
+    assert event.metadata["durable_delivery_session_key"] == sk
     parent.interrupt.assert_not_called()
     adapter._send_with_retry.assert_not_called()
 
@@ -288,5 +290,4 @@ def test_gateway_harvests_exception_path_internal_events() -> None:
         "completion preserved across exception"
     ]
     assert agent._take_undelivered_internal_events_after_turn() == []
-
 

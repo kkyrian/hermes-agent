@@ -10,6 +10,7 @@ import pytest
 
 from agent.prompt_builder import (
     _scan_context_content,
+    _build_skills_system_prompt_inner,
     _truncate_content,
     _parse_skill_file,
     _skill_should_show,
@@ -1083,6 +1084,41 @@ class TestSkillPromptExposure:
         viewed = json.loads(skills_tool.skill_view("prompt-hidden"))
         assert viewed["success"] is True
         assert "# prompt-hidden\nFull body" in viewed["content"]
+
+    @pytest.mark.parametrize(
+        ("policy", "expected", "unexpected"),
+        (
+            ({"default": "hidden"}, None, "project-skill"),
+            ({"hidden": ["project-skill"]}, None, "project-skill"),
+            ({"names_only": ["project-skill"]}, "    - project-skill\n", "Project detail"),
+            ({"descriptions": ["project-skill"]}, "project-skill: [project] Project detail", None),
+        ),
+    )
+    def test_project_skills_obey_prompt_exposure_policy(
+        self, monkeypatch, tmp_path, policy, expected, unexpected
+    ):
+        local = tmp_path / "local-skills"
+        local.mkdir()
+        project = tmp_path / "project-skills"
+        skill = project / "category" / "project-skill"
+        skill.mkdir(parents=True)
+        (skill / "SKILL.md").write_text(
+            "---\nname: project-skill\ndescription: Project detail\n---\nbody\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config_readonly",
+            lambda: {"skills": {"prompt_exposure": policy}},
+        )
+
+        result = _build_skills_system_prompt_inner(
+            local, [], set(), set(), None, project_dirs=[project]
+        )
+
+        if expected is not None:
+            assert expected in result
+        if unexpected is not None:
+            assert unexpected not in result
 
 
 

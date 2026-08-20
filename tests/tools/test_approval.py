@@ -712,6 +712,23 @@ class TestExpandedHardlineFloor:
     def test_recoverable_or_read_only_neighbors_are_not_hardline(self, command):
         assert detect_hardline_command(command) == (False, None)
 
+    @pytest.mark.parametrize(
+        "command",
+        (
+            'echo "cp image.raw /dev/sda"',
+            'git commit -m "use lvremove carefully"',
+            "printf '%s' 'wipefs -a /dev/sda'",
+            'echo "> /dev/sda"',
+            "printf '%s' '> /dev/sda'",
+            "find /tmp/work -delete",
+            "find /home/alice/project/build -delete",
+        ),
+    )
+    def test_destructive_words_in_data_or_unprotected_find_paths_are_not_hardline(
+        self, command
+    ):
+        assert detect_hardline_command(command) == (False, None)
+
 
 class TestGatewayProtection:
     """Prevent agents from starting the gateway outside systemd management."""
