@@ -152,6 +152,47 @@ def test_cli_completion_claim_is_released_when_turn_has_no_result(monkeypatch):
     assert cli._admitted_process_notification_claims == []
 
 
+def test_cli_failed_turn_harvests_completion_before_acknowledgement(monkeypatch):
+    cli = HermesCLI.__new__(HermesCLI)
+    cli._pending_input = queue.Queue()
+    event = {"delegation_id": "deleg_failed"}
+    cli._admitted_process_notification_claims = [
+        (event, "failed-claim", "completion payload")
+    ]
+    cli._stop_admitted_process_notification_renewal = MagicMock()
+    cli.agent = MagicMock()
+    cli.agent._take_undelivered_internal_events_after_turn.return_value = [
+        "completion payload"
+    ]
+    completed = []
+    monkeypatch.setattr(
+        "tools.async_delegation.complete_event_delivery",
+        lambda evt, token: completed.append((evt, token)),
+    )
+
+    cli._settle_admitted_process_notifications({"error": "provider failed"})
+
+    assert cli._pending_input.get_nowait() == "completion payload"
+    assert completed == [(event, "failed-claim")]
+
+
+def test_cli_active_completion_claims_are_renewed(monkeypatch):
+    cli = HermesCLI.__new__(HermesCLI)
+    event = {"delegation_id": "deleg_long_turn"}
+    cli._admitted_process_notification_claims = [
+        (event, "long-turn-claim", "payload")
+    ]
+    renewed = []
+    monkeypatch.setattr(
+        "tools.async_delegation.renew_completion_delivery",
+        lambda delegation_id, claim: renewed.append((delegation_id, claim)) or True,
+    )
+
+    cli._renew_admitted_process_notification_claims_once()
+
+    assert renewed == [("deleg_long_turn", "long-turn-claim")]
+
+
 def test_cli_completion_ownership_rejects_foreign_session():
     cli = HermesCLI.__new__(HermesCLI)
     cli.session_id = "visible-session"

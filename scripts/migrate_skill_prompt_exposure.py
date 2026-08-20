@@ -161,14 +161,22 @@ def apply_policy(home: Path, fragment: Path, *, apply: bool, allow_live: bool) -
 
 
 def rollback(manifest_path: Path, *, apply: bool, allow_live: bool) -> dict:
+    manifest_path = manifest_path.expanduser().resolve()
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     home = Path(manifest["home"]).resolve()
     if _is_live_profile(home) and apply and not allow_live:
         raise PermissionError(
             "live profile rollback mutation requires --apply and --allow-live-profile"
         )
-    config_path = Path(manifest["config"])
-    backup_config = Path(manifest["backup_config"])
+    config_path = Path(manifest["config"]).resolve()
+    expected_config = (home / "config.yaml").resolve()
+    if config_path != expected_config:
+        raise ValueError("manifest config must be <home>/config.yaml")
+    backup_config = Path(manifest["backup_config"]).resolve()
+    try:
+        backup_config.relative_to(manifest_path.parent)
+    except ValueError as exc:
+        raise ValueError("manifest backup_config must stay within the manifest directory") from exc
     report = {
         "action": "rollback" if apply else "rollback-dry-run",
         "home": str(home),

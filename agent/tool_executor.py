@@ -331,7 +331,7 @@ def _rebudget_tool_bases_preserving_suffixes(
 ) -> None:
     """Rebudget base output while preserving internal/steer/hook suffix order."""
     suffixes: list[tuple[str, str] | None] = []
-    fixed_size = 0
+    authority_size = 0
     original_contents = [message.get("content", "") for message in tool_messages]
     for base, authority, final in zip(
         base_contents, authority_contents, original_contents
@@ -346,20 +346,86 @@ def _rebudget_tool_bases_preserving_suffixes(
             authority_suffix = authority[len(base):]
             hook_suffix = final[len(authority):]
             suffixes.append((authority_suffix, hook_suffix))
-            fixed_size += len(authority_suffix) + len(hook_suffix)
+            authority_size += len(authority_suffix)
         else:
             suffixes.append(None)
-            fixed_size += len(_multimodal_text_summary(final))
+            authority_size += len(_multimodal_text_summary(final))
+
+    hook_messages = []
+    hook_indexes = []
+    for index, (message, suffix) in enumerate(zip(tool_messages, suffixes)):
+        if suffix is None or not suffix[1]:
+            continue
+        hook_indexes.append(index)
+        hook_messages.append(
+            {
+                "role": "tool",
+                "tool_call_id": message.get("tool_call_id", f"hook_{index}"),
+                "content": suffix[1],
+            }
+        )
+    hook_budget = max(0, budget.turn_budget - authority_size)
+    if hook_messages:
+        enforce_turn_budget(
+            hook_messages,
+            env=env,
+            config=BudgetConfig(
+                default_result_size=budget.default_result_size,
+                turn_budget=hook_budget,
+                preview_size=min(
+                    budget.preview_size,
+                    max(0, hook_budget // max(1, len(hook_messages))),
+                ),
+                tool_overrides=budget.tool_overrides,
+            ),
+        )
+        overflow = sum(len(item["content"]) for item in hook_messages) - hook_budget
+        if overflow > 0:
+            marker = "[Post-tool context truncated by aggregate turn budget.]"
+            for item in reversed(hook_messages):
+                if overflow <= 0:
+                    break
+                content = item["content"]
+                target = max(0, len(content) - overflow)
+                if target <= len(marker):
+                    replacement = marker[:target]
+                else:
+                    replacement = content[: target - len(marker)] + marker
+                overflow -= len(content) - len(replacement)
+                item["content"] = replacement
+        for index, item in zip(hook_indexes, hook_messages):
+            authority_suffix, _hook_suffix = suffixes[index]
+            suffixes[index] = (authority_suffix, item["content"])
+
+    hook_size = sum(len(suffix[1]) for suffix in suffixes if suffix is not None)
 
     base_budget = BudgetConfig(
         default_result_size=budget.default_result_size,
-        turn_budget=max(0, budget.turn_budget - fixed_size),
+        turn_budget=max(0, budget.turn_budget - authority_size - hook_size),
         preview_size=budget.preview_size,
         tool_overrides=budget.tool_overrides,
     )
     for message, base, suffix in zip(tool_messages, base_contents, suffixes):
         message["content"] = base if suffix is not None else ""
     enforce_turn_budget(tool_messages, env=env, config=base_budget)
+    base_overflow = (
+        sum(
+            len(message.get("content", ""))
+            for message, suffix in zip(tool_messages, suffixes)
+            if suffix is not None
+        )
+        - base_budget.turn_budget
+    )
+    if base_overflow > 0:
+        for message, suffix in reversed(list(zip(tool_messages, suffixes))):
+            if base_overflow <= 0:
+                break
+            if suffix is None:
+                continue
+            content = message.get("content", "")
+            trim = min(len(content), base_overflow)
+            message["content"] = content[: len(content) - trim]
+            base_overflow -= trim
     for message, suffix, original in zip(tool_messages, suffixes, original_contents):
         if suffix is None:
             message["content"] = original

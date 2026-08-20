@@ -701,6 +701,10 @@ class TestExpandedHardlineFloor:
             "find -D search /home -delete",
             "find -O3 /root -delete",
             "find -- /etc -delete",
+            "find /home/../etc -delete",
+            "find /tmp/../home -delete",
+            "command wipefs -a /dev/sda",
+            "command -p wipefs -a /dev/nvme0",
         ),
     )
     def test_unrecoverable_equivalents_are_hardline_blocked(self, command):

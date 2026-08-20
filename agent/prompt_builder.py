@@ -1629,6 +1629,7 @@ def _load_skill_prompt_exposure_policy() -> tuple[dict, tuple]:
                 memberships.setdefault(name, set()).add(tier)
 
     tiers: dict[str, str] = {}
+    ambiguous_memberships: set[str] = set()
     for name, declared in memberships.items():
         if len(declared) > 1:
             logger.warning(
@@ -1637,6 +1638,7 @@ def _load_skill_prompt_exposure_policy() -> tuple[dict, tuple]:
                 sorted(declared),
             )
             tiers[name] = "hidden"
+            ambiguous_memberships.add(name)
         else:
             tiers[name] = next(iter(declared))
 
@@ -1648,6 +1650,8 @@ def _load_skill_prompt_exposure_policy() -> tuple[dict, tuple]:
             if not name or not isinstance(spec, dict):
                 continue
             tier = str(spec.get("tier") or tiers.get(name) or default).strip().lower()
+            if name in ambiguous_memberships:
+                tier = "hidden"
             if tier not in _SKILL_EXPOSURE_TIERS:
                 tier = "hidden"
             toolsets = spec.get("requires_toolsets") or []

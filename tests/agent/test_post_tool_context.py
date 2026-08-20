@@ -161,6 +161,41 @@ def test_post_tool_context_is_rebounded_before_final_persistence(tmp_path):
     db.close()
 
 
+def test_hook_suffixes_spill_or_truncate_before_small_turn_budget(tmp_path):
+    agent = SimpleNamespace(
+        session_id=None,
+        _session_db=None,
+        _current_turn_id="turn-small-budget",
+        _apply_pending_internal_events_to_tool_results=_append_internal,
+        _apply_pending_steer_to_tool_results=_append_steer,
+    )
+    messages = [
+        {"role": "tool", "tool_call_id": "call-1", "content": "base"},
+    ]
+    with (
+        patch("hermes_cli.lifecycle.has_hook", return_value=True),
+        patch(
+            "hermes_cli.lifecycle.invoke_hook",
+            return_value=[{"context": "HOOK-" + "z" * 20_000}],
+        ),
+    ):
+        _finalize_tool_boundary(
+            agent,
+            messages,
+            messages,
+            [_tool_call("terminal", "call-1")],
+            effective_task_id="task-small-budget",
+            api_call_count=1,
+            budget=BudgetConfig(turn_budget=120, preview_size=40),
+        )
+
+    content = messages[0]["content"]
+    assert "INTERNAL-EVIDENCE" in content
+    assert "STEER-GUIDANCE" in content
+    assert content.index("INTERNAL-EVIDENCE") < content.index("STEER-GUIDANCE")
+    assert len(content) <= 120
+
+
 def test_post_tool_context_appends_to_multimodal_result(tmp_path):
     db = SessionDB(db_path=tmp_path / "state.db")
     session_id = "multimodal-context"
