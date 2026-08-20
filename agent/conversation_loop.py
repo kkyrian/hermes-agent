@@ -606,6 +606,14 @@ def _inject_pending_internal_events_pre_api(agent, messages: list) -> bool:
         blocks.append({"type": "text", "text": marker.lstrip()})
         target["content"] = blocks
 
+    # This boundary can race after the tool row was incrementally written.
+    # Append-only session flushing deliberately skips stamped rows, so update
+    # that durable carrier in place before the next provider request.
+    if target.get("_db_persisted"):
+        from agent.tool_executor import _persist_final_tool_result_batch
+
+        _persist_final_tool_result_batch(agent, [target])
+
     agent._session_messages = messages
     logger.info(
         "Delivered %d subagent completion event(s) at pre-API boundary",

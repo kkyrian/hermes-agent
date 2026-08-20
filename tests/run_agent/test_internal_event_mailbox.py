@@ -315,6 +315,29 @@ def test_pre_api_boundary_merges_late_completion_into_internal_context() -> None
     assert agent._take_internal_events_at_boundary() == []
 
 
+def test_pre_api_boundary_updates_an_already_persisted_tool_carrier() -> None:
+    agent = _bare_agent()
+    setattr(agent, "_persist_user_message_idx", None)
+    setattr(agent, "_persist_user_message_override", None)
+    db = _CapturingSessionDB()
+    setattr(agent, "_session_db", db)
+    setattr(agent, "_session_db_created", True)
+    setattr(agent, "_last_flushed_db_idx", 0)
+    setattr(agent, "session_id", "sess-late-internal-event")
+    messages = [
+        {"role": "assistant", "tool_calls": [{"id": "call-1"}]},
+        {"role": "tool", "tool_call_id": "call-1", "content": "first completion"},
+    ]
+    agent._flush_messages_to_session_db(messages, conversation_history=[])
+    agent._open_internal_event_mailbox()
+    assert agent.enqueue_internal_event("late completion")
+
+    assert _inject_pending_internal_events_pre_api(agent, messages)
+
+    assert messages[-1]["_db_persisted"] is True
+    assert db.rows[-1]["content"] == "first completion\n\nlate completion"
+
+
 def test_pre_api_boundary_requeues_when_no_safe_carrier_exists() -> None:
     agent = _bare_agent()
     setattr(agent, "_pending_steer", "owner correction")

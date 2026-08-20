@@ -564,7 +564,6 @@ HARDLINE_PATTERNS = [
     # unconditional.  Narrow dataset/snapshot deletion belongs in the normal
     # dangerous-command approval tier below; ``zpool destroy`` removes the
     # complete storage pool and remains unconditional.
-    (_CMDPOS + r'(?:zpool\s+destroy|(?:lvremove|vgremove|pvremove))\b', "destroy a ZFS or LVM storage layer"),
     # Fork bomb (classic shell form)
     (r':\(\)\s*\{\s*:\s*\|\s*:\s*&\s*\}\s*;\s*:', "fork bomb"),
     # Kill every process on the system
@@ -603,11 +602,18 @@ _HARDLINE_WIPEFS_CANDIDATE_RE = re.compile(
 _HARDLINE_ZFS_DESTROY_CANDIDATE_RE = re.compile(
     _CMDPOS + r'zfs\s+destroy\b(?P<args>[^\n;|&]*)', _RE_FLAGS
 )
+_HARDLINE_STORAGE_DESTROY_CANDIDATE_RE = re.compile(
+    _CMDPOS
+    + r'(?P<command>zpool\s+destroy|lvremove|vgremove|pvremove)\b'
+    + r'(?P<args>[^\n;|&]*)',
+    _RE_FLAGS,
+)
 
 
 def _is_protected_find_path(path: str) -> bool:
     protected = {"/", "/home", "/root", "/etc", "/usr", "/var", "/bin", "/sbin", "/boot", "/lib"}
-    if path in {"~", "$HOME", "${HOME}"}:
+    home_alias = path.rstrip("/")
+    if home_alias.lower() in {"~", "$home", "${home}"}:
         return True
     if not path.startswith("/"):
         return False
@@ -666,6 +672,30 @@ def _has_recursive_zfs_destroy(command: str) -> bool:
             if not token.startswith("-") or token == "--":
                 break
             if "r" in token[1:].lower():
+                return True
+    return False
+
+
+def _has_destructive_storage_layer_removal(command: str) -> bool:
+    """Block real pool/LVM removal while permitting help and dry-run modes."""
+    for match in _HARDLINE_STORAGE_DESTROY_CANDIDATE_RE.finditer(command):
+        try:
+            tokens = shlex.split(match.group("args"), posix=True)
+        except ValueError:
+            continue
+        command_name = match.group("command").lower()
+        if any(token in {"--help", "-h", "-?"} for token in tokens):
+            continue
+        if command_name != "zpool destroy" and any(
+            token in {"--test", "-t"} for token in tokens
+        ):
+            continue
+        end_of_options = False
+        for token in tokens:
+            if token == "--":
+                end_of_options = True
+                continue
+            if end_of_options or not token.startswith("-"):
                 return True
     return False
 
@@ -784,6 +814,8 @@ def detect_hardline_command(command: str) -> tuple:
         if _has_destructive_wipefs(variant_lower):
             return (True, "erase or discard an entire raw block device")
         if _has_recursive_zfs_destroy(variant_lower):
+            return (True, "destroy a ZFS or LVM storage layer")
+        if _has_destructive_storage_layer_removal(variant_lower):
             return (True, "destroy a ZFS or LVM storage layer")
         for pattern_re, description in HARDLINE_PATTERNS_COMPILED:
             if pattern_re.search(variant_lower):
