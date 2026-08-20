@@ -17,6 +17,7 @@ import logging
 import os
 import re
 import shlex
+import posixpath
 import sys
 import tempfile
 import threading
@@ -468,7 +469,7 @@ _CMDPOS = (
     r'\s*'                          # optional whitespace
     r'(?:sudo\s+(?:-[^\s]+\s+)*)?'  # optional sudo with flags
     r'(?:env\s+(?:\w+=\S*\s+)*)?'   # optional env with VAR=VAL pairs
-    r'(?:(?:exec|nohup|setsid|time)\s+)*'  # optional wrapper commands
+    r'(?:(?:exec|nohup|setsid|time)\s+|command\s+(?:-[^\s]+\s+)*)*'  # optional wrapper commands
     r'\s*'
 )
 
@@ -586,6 +587,31 @@ HARDLINE_PATTERNS_COMPILED = [
     for pattern, description in HARDLINE_PATTERNS
 ]
 
+_HARDLINE_FIND_CANDIDATE_RE = re.compile(
+    _CMDPOS
+    + r'find\s+'
+    + _HARDLINE_FIND_LEADING_OPTIONS
+    + r'(?P<path>"[^"]*"|\'[^\']*\'|[^\s;|&)]+)[^\n]*-delete\b',
+    _RE_FLAGS,
+)
+
+
+def _has_lexically_protected_find_delete(command: str) -> bool:
+    """Detect protected find roots after lexical ``.``/``..`` collapse."""
+    protected = {"/", "/home", "/root", "/etc", "/usr", "/var", "/bin", "/sbin", "/boot", "/lib"}
+    for match in _HARDLINE_FIND_CANDIDATE_RE.finditer(command):
+        path = match.group("path")
+        if len(path) >= 2 and path[0] == path[-1] and path[0] in "\"'":
+            path = path[1:-1]
+        if path in {"~", "$HOME", "${HOME}"}:
+            return True
+        if not path.startswith("/"):
+            continue
+        normalized = "/" + posixpath.normpath(path).lstrip("/")
+        if normalized in protected:
+            return True
+    return False
+
 
 def _has_unquoted_raw_device_redirection(command: str) -> bool:
     """Recognize shell redirection to a block device, excluding quoted data."""
@@ -671,6 +697,8 @@ def detect_hardline_command(command: str) -> tuple:
         return (True, "redirect to raw block device")
     for command_variant in _command_detection_variants(command):
         variant_lower = command_variant.lower()
+        if _has_lexically_protected_find_delete(variant_lower):
+            return (True, "recursive find deletion of root/system/home")
         for pattern_re, description in HARDLINE_PATTERNS_COMPILED:
             if pattern_re.search(variant_lower):
                 return (True, description)

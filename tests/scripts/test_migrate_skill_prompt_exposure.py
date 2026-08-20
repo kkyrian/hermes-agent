@@ -130,6 +130,26 @@ def test_default_home_is_live_for_apply_and_rollback(monkeypatch, tmp_path):
     assert config.read_text(encoding="utf-8") == original
 
 
+@pytest.mark.parametrize("field", ("config", "backup_config"))
+def test_rollback_rejects_manifest_paths_outside_owned_locations(tmp_path, field):
+    home = tmp_path / "profile"
+    home.mkdir()
+    manifest_dir = home / "backups" / "skill-prompt-exposure" / "stamp"
+    manifest_dir.mkdir(parents=True)
+    manifest = {
+        "home": str(home),
+        "config": str(home / "config.yaml"),
+        "backup_config": str(manifest_dir / "config.yaml.before"),
+        "config_existed": True,
+    }
+    manifest[field] = str(tmp_path / "outside.yaml")
+    manifest_path = manifest_dir / "manifest.json"
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    with pytest.raises(ValueError):
+        MOD.rollback(manifest_path, apply=False, allow_live=False)
+
+
 def test_checked_in_item14_policy_invariants():
     policy_path = Path(__file__).parents[2] / "docs/design/item14-skill-prompt-exposure.yaml"
     policy = yaml.safe_load(policy_path.read_text())["skills"]["prompt_exposure"]

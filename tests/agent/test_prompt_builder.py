@@ -1009,6 +1009,29 @@ class TestSkillPromptExposure:
         )
         assert "ambiguous" not in build_skills_system_prompt()
 
+    def test_duplicate_membership_stays_hidden_when_conditional_exposes_it(
+        self, monkeypatch, tmp_path
+    ):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        self._write_skill(tmp_path, "ambiguous", "Do not expose")
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config_readonly",
+            lambda: {"skills": {"prompt_exposure": {
+                "names_only": ["ambiguous"],
+                "descriptions": ["ambiguous"],
+                "conditional": {
+                    "ambiguous": {
+                        "tier": "description",
+                        "requires_toolsets": ["terminal"],
+                    }
+                },
+            }}},
+        )
+
+        assert "ambiguous" not in build_skills_system_prompt(
+            available_toolsets={"terminal"}
+        )
+
     def test_conditional_requires_authorized_toolset_and_executable(
         self, monkeypatch, tmp_path
     ):

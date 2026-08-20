@@ -12832,6 +12832,57 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                     pending_claims = []
                     self._admitted_process_notification_claims = pending_claims
                 pending_claims.append((event, claim, synthetic_message))
+                self._start_admitted_process_notification_renewal()
+
+    def _renew_admitted_process_notification_claims_once(self) -> None:
+        """Refresh every durable completion claim held by the active CLI turn."""
+        from tools.async_delegation import renew_completion_delivery
+
+        claims = getattr(self, "_admitted_process_notification_claims", None)
+        if not isinstance(claims, list):
+            return
+        for event, claim, _message in list(claims):
+            delegation_id = str(event.get("delegation_id") or "")
+            if not delegation_id or not claim:
+                continue
+            try:
+                renew_completion_delivery(delegation_id, claim)
+            except Exception:
+                logging.debug(
+                    "could not renew admitted CLI completion claim",
+                    exc_info=True,
+                )
+
+    def _start_admitted_process_notification_renewal(self) -> None:
+        """Keep active-turn completion claims alive until settlement."""
+        thread = getattr(self, "_admitted_process_notification_renew_thread", None)
+        if thread is not None and thread.is_alive():
+            return
+        stop = threading.Event()
+        self._admitted_process_notification_renew_stop = stop
+
+        def _renew_loop() -> None:
+            while not stop.wait(60.0):
+                self._renew_admitted_process_notification_claims_once()
+
+        thread = threading.Thread(
+            target=_renew_loop,
+            name="hermes-cli-completion-renewal",
+            daemon=True,
+        )
+        self._admitted_process_notification_renew_thread = thread
+        thread.start()
+
+    def _stop_admitted_process_notification_renewal(self) -> None:
+        """Cancel the active-turn claim renewer before claims are settled."""
+        stop = getattr(self, "_admitted_process_notification_renew_stop", None)
+        if stop is not None:
+            stop.set()
+        thread = getattr(self, "_admitted_process_notification_renew_thread", None)
+        if thread is not None and thread is not threading.current_thread():
+            thread.join(timeout=1.0)
+        self._admitted_process_notification_renew_stop = None
+        self._admitted_process_notification_renew_thread = None
 
     def _settle_admitted_process_notifications(self, result: object) -> None:
         """Acknowledge admitted completions only after consumption or requeue.
@@ -12846,6 +12897,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         claims = getattr(self, "_admitted_process_notification_claims", None)
         if not isinstance(claims, list) or not claims:
             return
+        self._stop_admitted_process_notification_renewal()
         self._admitted_process_notification_claims = []
         from tools.async_delegation import (
             complete_event_delivery,
@@ -12865,6 +12917,19 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
 
         leftovers = result.get("pending_internal_events")
         remaining = list(leftovers) if isinstance(leftovers, list) else []
+        take_undelivered = getattr(
+            getattr(self, "agent", None),
+            "_take_undelivered_internal_events_after_turn",
+            None,
+        )
+        if callable(take_undelivered):
+            try:
+                remaining.extend(take_undelivered())
+            except Exception:
+                logging.debug(
+                    "could not harvest failed-turn CLI completions",
+                    exc_info=True,
+                )
         for event, claim, message in claims:
             if message in remaining:
                 remaining.remove(message)
@@ -12876,11 +12941,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                     "could not acknowledge admitted CLI completion",
                     exc_info=True,
                 )
-        if isinstance(leftovers, list):
-            if remaining:
-                result["pending_internal_events"] = remaining
-            else:
-                result.pop("pending_internal_events", None)
+        for message in remaining:
+            self._pending_input.put(message)
+        result.pop("pending_internal_events", None)
 
     def _drain_interrupt_queue_to_pending_input(self) -> None:
         """Move stray messages from ``_interrupt_queue`` into ``_pending_input``.
