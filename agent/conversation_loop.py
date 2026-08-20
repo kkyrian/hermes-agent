@@ -589,6 +589,18 @@ def _inject_pending_internal_events_before_stop(
     return True
 
 
+def _close_stream_before_internal_followup(agent, final_response: str) -> None:
+    """Separate an already-streamed attempted final from its resample."""
+    if not agent._interim_content_was_streamed(final_response or ""):
+        return
+    if agent.stream_delta_callback:
+        try:
+            agent.stream_delta_callback(None)
+        except Exception:
+            pass
+    agent._stream_needs_break = True
+
+
 def _inject_pending_internal_events_pre_api(agent, messages: list) -> bool:
     """Drain completions that race after a tool/final boundary but before sampling."""
     events = agent._take_internal_events_at_boundary()
@@ -8414,6 +8426,12 @@ def run_conversation(
                     continue
 
                 if _inject_pending_internal_events_before_stop(agent, messages, final_msg):
+                    # The attempted final answer may already be visible to a
+                    # streaming client. Close that display stream and force a
+                    # paragraph boundary before resampling with the newly
+                    # arrived completion evidence, so the next answer cannot
+                    # concatenate with or visually rewrite the first one.
+                    _close_stream_before_internal_followup(agent, final_response or "")
                     agent._persist_session(messages, conversation_history)
                     final_response = None
                     continue

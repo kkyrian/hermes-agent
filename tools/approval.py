@@ -513,6 +513,9 @@ _HARDLINE_SYSTEM_DIRS = (
 _RM_FLAG_PREFIX = _CMDPOS + r'rm\s+(-[^\s]*\s+)*'
 
 _HARDLINE_BLOCK_DEVICE = r'/dev/(?:sd[a-z][a-z0-9]*|hd[a-z][a-z0-9]*|vd[a-z][a-z0-9]*|xvd[a-z][a-z0-9]*|mmcblk\d+(?:p\d+)?|nvme\d+n\d+(?:p\d+)?)'
+_HARDLINE_FIND_PATH = _hardline_rm_path(
+    r'/|' + _HARDLINE_SYSTEM_DIRS + r'|~|\$\{?HOME\}?'
+)
 
 HARDLINE_PATTERNS = [
     # rm recursive targeting the root filesystem or protected roots.
@@ -535,18 +538,17 @@ HARDLINE_PATTERNS = [
     (_RM_FLAG_PREFIX + _hardline_rm_path(_HARDLINE_SYSTEM_DIRS), "recursive delete of system directory"),
     (_RM_FLAG_PREFIX + _hardline_rm_path(r'(?:~|\$\{?HOME\}?)(?:/?|/\*)?'), "recursive delete of home directory"),
     # Filesystem format
-    (r'\bmkfs(\.[a-z0-9]+)?\b', "format filesystem (mkfs)"),
+    (_CMDPOS + r'mkfs(\.[a-z0-9]+)?\b', "format filesystem (mkfs)"),
     # Raw block device overwrites (dd + redirection)
-    (r'\bdd\b[^\n]*\bof=/dev/(sd|nvme|hd|mmcblk|vd|xvd)[a-z0-9]*', "dd to raw block device"),
-    (r'>\s*/dev/(sd|nvme|hd|mmcblk|vd|xvd)[a-z0-9]*\b', "redirect to raw block device"),
-    (rf'\b(?:wipefs|blkdiscard|shred)\b[^\n]*["\']?{_HARDLINE_BLOCK_DEVICE}\b', "erase or discard an entire raw block device"),
-    (rf'\bsgdisk\b[^\n]*(?:--zap-all|-Z)\b[^\n]*["\']?{_HARDLINE_BLOCK_DEVICE}\b', "erase a raw block-device partition table"),
-    (rf'\bnvme\b\s+(?:format|sanitize)\b[^\n]*["\']?{_HARDLINE_BLOCK_DEVICE}\b', "destructive NVMe format/sanitize"),
-    (rf'(?:\bcp\b[^\n]*\s+["\']?{_HARDLINE_BLOCK_DEVICE}["\']?\s*(?:$|\n)|\btee\b[^\n]*["\']?{_HARDLINE_BLOCK_DEVICE}\b)', "write to an entire raw block device"),
+    (_CMDPOS + r'dd\b[^\n]*\bof=/dev/(sd|nvme|hd|mmcblk|vd|xvd)[a-z0-9]*', "dd to raw block device"),
+    (_CMDPOS + rf'(?:wipefs|blkdiscard|shred)\b[^\n]*["\']?{_HARDLINE_BLOCK_DEVICE}\b', "erase or discard an entire raw block device"),
+    (_CMDPOS + rf'sgdisk\b[^\n]*(?:--zap-all|-Z)\b[^\n]*["\']?{_HARDLINE_BLOCK_DEVICE}\b', "erase a raw block-device partition table"),
+    (_CMDPOS + rf'nvme\s+(?:format|sanitize)\b[^\n]*["\']?{_HARDLINE_BLOCK_DEVICE}\b', "destructive NVMe format/sanitize"),
+    (_CMDPOS + rf'(?:cp\b[^\n]*\s+["\']?{_HARDLINE_BLOCK_DEVICE}["\']?\s*(?:$|\n)|tee\b[^\n]*["\']?{_HARDLINE_BLOCK_DEVICE}\b)', "write to an entire raw block device"),
     # Non-rm spellings of the same unrecoverable recursive deletion floor.
-    (rf'\bfind\s+["\']?(?:/|{_HARDLINE_SYSTEM_DIRS}|~|\$\{{?HOME\}}?)["\']?[^\n]*-delete\b', "recursive find deletion of root/system/home"),
+    (_CMDPOS + r'find\s+' + _HARDLINE_FIND_PATH + r'[^\n]*-delete\b', "recursive find deletion of root/system/home"),
     # Whole storage-pool / volume destruction has no ordinary recovery path.
-    (r'\b(?:(?:zpool|zfs)\s+destroy|(?:lvremove|vgremove|pvremove))\b', "destroy a ZFS or LVM storage layer"),
+    (_CMDPOS + r'(?:(?:zpool|zfs)\s+destroy|(?:lvremove|vgremove|pvremove))\b', "destroy a ZFS or LVM storage layer"),
     # Fork bomb (classic shell form)
     (r':\(\)\s*\{\s*:\s*\|\s*:\s*&\s*\}\s*;\s*:', "fork bomb"),
     # Kill every process on the system
@@ -572,6 +574,38 @@ HARDLINE_PATTERNS_COMPILED = [
     (re.compile(pattern, _RE_FLAGS), description)
     for pattern, description in HARDLINE_PATTERNS
 ]
+
+
+def _has_unquoted_raw_device_redirection(command: str) -> bool:
+    """Recognize shell redirection to a block device, excluding quoted data."""
+    target_re = re.compile(
+        rf'>{{1,2}}\s*(?P<quote>["\']?){_HARDLINE_BLOCK_DEVICE}'
+        r'(?P=quote)(?=\s|$|[;|&)])',
+        re.IGNORECASE,
+    )
+    quote: str | None = None
+    index = 0
+    while index < len(command):
+        char = command[index]
+        if quote is not None:
+            if char == "\\" and quote == '"' and index + 1 < len(command):
+                index += 2
+                continue
+            if char == quote:
+                quote = None
+            index += 1
+            continue
+        if char in ("'", '"'):
+            quote = char
+            index += 1
+            continue
+        if char == "\\" and index + 1 < len(command):
+            index += 2
+            continue
+        if char == ">" and target_re.match(command, index):
+            return True
+        index += 1
+    return False
 
 
 # =========================================================================
@@ -622,6 +656,8 @@ def detect_hardline_command(command: str) -> tuple:
     _, malformed_grep = _grep_safe_detection_variant(normalized)
     if malformed_grep:
         return (True, _MALFORMED_EXEC_DESCRIPTION)
+    if _has_unquoted_raw_device_redirection(command):
+        return (True, "redirect to raw block device")
     for command_variant in _command_detection_variants(command):
         variant_lower = command_variant.lower()
         for pattern_re, description in HARDLINE_PATTERNS_COMPILED:

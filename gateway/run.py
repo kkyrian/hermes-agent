@@ -3560,6 +3560,139 @@ def _queue_typed_internal_followup(runner: Any, session_key: str, event: Message
         queues.setdefault(session_key, []).append(event)
 
 
+def _defer_completion_delivery(
+    runner: Any,
+    session_key: str,
+    *,
+    synth_text: str,
+    delegation_id: str,
+    claim_id: str,
+    identity: Optional[tuple[str, str, object]],
+) -> None:
+    """Retain a durable completion claim until the busy turn consumes it.
+
+    Adapter acceptance is only mailbox admission while the parent agent is
+    active.  The durable row must remain claimed until the turn returns and
+    any unconsumed mailbox payload has been moved to the typed idle queue.
+    """
+    lock = getattr(runner, "_completion_delivery_lock", None)
+    if lock is None:
+        lock = threading.Lock()
+        runner._completion_delivery_lock = lock
+    with lock:
+        pending = getattr(runner, "_deferred_completion_deliveries", None)
+        if not isinstance(pending, dict):
+            pending = {}
+            runner._deferred_completion_deliveries = pending
+        pending.setdefault(session_key, []).append({
+            "text": synth_text,
+            "delegation_id": delegation_id,
+            "claim_id": claim_id,
+            "identity": identity,
+            "siblings": [],
+        })
+
+
+def _attach_deferred_completion_siblings(
+    runner: Any,
+    session_key: str,
+    primary_delegation_id: str,
+    siblings: list[tuple[dict, str]],
+) -> bool:
+    """Attach coalesced sibling claims to their admitted primary payload."""
+    lock = getattr(runner, "_completion_delivery_lock", None)
+    if lock is None:
+        return False
+    with lock:
+        pending = getattr(runner, "_deferred_completion_deliveries", {})
+        for record in reversed(pending.get(session_key, [])):
+            if record.get("delegation_id") == primary_delegation_id:
+                record["siblings"].extend(siblings)
+                return True
+    return False
+
+
+def _settle_deferred_completion_deliveries(runner: Any, session_key: str) -> None:
+    """Acknowledge mailbox deliveries after consumption or fallback queuing."""
+    lock = getattr(runner, "_completion_delivery_lock", None)
+    if lock is None:
+        return
+    with lock:
+        pending = getattr(runner, "_deferred_completion_deliveries", {})
+        records = list(pending.get(session_key, []))
+    if not records:
+        return
+
+    from tools.async_delegation import (
+        complete_completion_delivery,
+    )
+
+    remaining = []
+    for record in records:
+        primary_done = not record.get("claim_id")
+        if not primary_done:
+            try:
+                primary_done = bool(complete_completion_delivery(
+                    record["delegation_id"], record["claim_id"],
+                ))
+            except Exception:
+                logger.warning(
+                    "Could not acknowledge consumed durable async completion %s",
+                    record.get("delegation_id"),
+                    exc_info=True,
+                )
+
+        sibling_remaining = []
+        for sibling_evt, sibling_claim_id in record.get("siblings", []):
+            try:
+                if not complete_completion_delivery(
+                    str(sibling_evt.get("delegation_id") or ""),
+                    sibling_claim_id,
+                ):
+                    sibling_remaining.append((sibling_evt, sibling_claim_id))
+            except Exception:
+                sibling_remaining.append((sibling_evt, sibling_claim_id))
+                logger.warning(
+                    "Could not acknowledge consumed coalesced completion %s",
+                    sibling_evt.get("delegation_id"),
+                    exc_info=True,
+                )
+
+        with lock:
+            if primary_done and record.get("identity") is not None:
+                identity = record.get("identity")
+                runner._completion_deliveries_inflight.discard(identity)
+                runner._completion_deliveries_delivered[identity] = None
+                record["identity"] = None
+            if primary_done:
+                for sibling_evt, _claim_id in record.get("siblings", []):
+                    sibling_identity = runner._completion_delivery_identity(sibling_evt)
+                    if sibling_identity is not None and (
+                        sibling_evt, _claim_id
+                    ) not in sibling_remaining:
+                        runner._completion_deliveries_inflight.discard(sibling_identity)
+                        runner._completion_deliveries_delivered[sibling_identity] = None
+                while (
+                    len(runner._completion_deliveries_delivered)
+                    > runner._completion_delivery_retention
+                ):
+                    runner._completion_deliveries_delivered.popitem(last=False)
+            record["siblings"] = sibling_remaining
+
+        if not primary_done or sibling_remaining:
+            if primary_done:
+                record["delegation_id"] = ""
+                record["claim_id"] = ""
+            remaining.append(record)
+
+    with lock:
+        pending = getattr(runner, "_deferred_completion_deliveries", {})
+        if remaining:
+            pending[session_key] = remaining
+        else:
+            pending.pop(session_key, None)
+
+
 def _dequeue_typed_internal_followup(
     runner: Any, session_key: str
 ) -> Optional[MessageEvent]:
@@ -10385,6 +10518,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if _is_subagent_completion and callable(_enqueue_internal):
                 try:
                     if bool(_enqueue_internal(_internal_text)):
+                        _internal_metadata["durable_delivery_deferred"] = True
+                        _internal_metadata["durable_delivery_session_key"] = session_key
                         logger.info(
                             "Admitted subagent completion to active parent mailbox: session=%s",
                             session_key,
@@ -25283,6 +25418,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if callable(_prime):
                 _prime(synth_event)
             await adapter.handle_message(synth_event)
+            if metadata.get("durable_delivery_deferred"):
+                evt["_durable_delivery_deferred_session_key"] = str(
+                    metadata.get("durable_delivery_session_key") or ""
+                )
             return True
         except Exception as e:
             logger.error("Watch notification injection error: %s", e)
@@ -25491,6 +25630,26 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if injection_result is not True:
                 return injection_result
             accepted = True
+
+            deferred_session_key = str(
+                evt.get("_durable_delivery_deferred_session_key") or ""
+            )
+            if durable_claim_id and deferred_session_key:
+                _defer_completion_delivery(
+                    self,
+                    deferred_session_key,
+                    synth_text=synth_text,
+                    delegation_id=durable_delegation_id,
+                    claim_id=durable_claim_id,
+                    identity=identity,
+                )
+                logger.info(
+                    "Deferred durable async completion acknowledgement until "
+                    "active-turn consumption: delegation=%s session=%s",
+                    durable_delegation_id,
+                    deferred_session_key,
+                )
+                return True
 
             if identity is not None:
                 with self._completion_delivery_lock:
@@ -25849,17 +26008,38 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             )
         finally:
             if delivered is True:
-                for evt, claim_id in siblings:
-                    try:
-                        complete_event_delivery(evt, claim_id)
-                    except Exception:
-                        logger.debug(
-                            "Could not acknowledge coalesced durable completion",
-                            exc_info=True,
-                        )
-                self._record_coalesced_completion_siblings(
-                    [evt for evt, _claim_id in siblings]
+                deferred_session_key = str(
+                    primary_evt.get("_durable_delivery_deferred_session_key") or ""
                 )
+                if deferred_session_key:
+                    attached = _attach_deferred_completion_siblings(
+                        self,
+                        deferred_session_key,
+                        str(primary_evt.get("delegation_id") or ""),
+                        siblings,
+                    )
+                    if not attached:
+                        for evt, claim_id in siblings:
+                            try:
+                                release_event_delivery(evt, claim_id)
+                            except Exception:
+                                logger.debug(
+                                    "Could not release unattached coalesced claim",
+                                    exc_info=True,
+                                )
+                        delivered = False
+                else:
+                    for evt, claim_id in siblings:
+                        try:
+                            complete_event_delivery(evt, claim_id)
+                        except Exception:
+                            logger.debug(
+                                "Could not acknowledge coalesced durable completion",
+                                exc_info=True,
+                            )
+                    self._record_coalesced_completion_siblings(
+                        [evt for evt, _claim_id in siblings]
+                    )
             else:
                 # Not delivered — release every sibling claim so a retry (or
                 # another consumer) can claim it, honestly leaving the durable
@@ -29471,6 +29651,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     logger.debug(
                         "Queued leftover subagent completion as typed idle follow-up"
                     )
+
+            # A busy-session adapter acceptance only admitted the completion
+            # to the active agent's mailbox.  Once run_sync has returned, the
+            # event was either consumed at a model boundary or harvested above
+            # into the typed idle queue.  Only now is the durable producer row
+            # safe to acknowledge.  Timeout/no-result paths intentionally keep
+            # the claim pending for lease expiry and replay.
+            if result_holder[0] is not None and agent_holder[0] is not None:
+                _settle_deferred_completion_deliveries(self, session_key)
 
             # Leftover /steer: if a steer arrived after the last tool batch
             # (e.g. during the final API call), the agent couldn't inject it

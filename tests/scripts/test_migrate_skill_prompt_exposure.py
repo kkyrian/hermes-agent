@@ -4,6 +4,7 @@ from pathlib import Path
 from unittest import mock
 
 import yaml
+import pytest
 
 
 SCRIPT = Path(__file__).parents[2] / "scripts" / "migrate_skill_prompt_exposure.py"
@@ -104,6 +105,29 @@ def test_live_profile_requires_two_explicit_flags(monkeypatch, tmp_path):
 
     applied = MOD.apply_policy(home, policy, apply=True, allow_live=True)
     assert Path(applied["manifest"]).exists()
+
+
+def test_default_home_is_live_for_apply_and_rollback(monkeypatch, tmp_path):
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    config = home / "config.yaml"
+    original = "model:\n  default: test\n"
+    config.write_text(original, encoding="utf-8")
+    policy = tmp_path / "policy.yaml"
+    _policy(policy)
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+    with pytest.raises(PermissionError):
+        MOD.apply_policy(home, policy, apply=True, allow_live=False)
+
+    applied = MOD.apply_policy(home, policy, apply=True, allow_live=True)
+    manifest = Path(applied["manifest"])
+
+    with pytest.raises(PermissionError):
+        MOD.rollback(manifest, apply=True, allow_live=False)
+
+    MOD.rollback(manifest, apply=True, allow_live=True)
+    assert config.read_text(encoding="utf-8") == original
 
 
 def test_checked_in_item14_policy_invariants():

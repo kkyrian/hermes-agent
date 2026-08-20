@@ -16,7 +16,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from gateway.config import Platform
-from gateway.run import GatewayRunner
+from gateway.run import GatewayRunner, _settle_deferred_completion_deliveries
 from gateway.session import SessionSource
 from tools.process_registry import ProcessRegistry, ProcessSession
 
@@ -185,6 +185,48 @@ def test_failed_async_injection_is_retried_and_only_success_is_acked(
 
     assert adapter.handle_message.await_count == 2
     assert acknowledgements == ["deleg_duplicate"]
+
+
+def test_busy_mailbox_admission_defers_durable_ack_until_turn_settlement(
+    monkeypatch,
+):
+    from tools import async_delegation
+
+    runner = _runner(SimpleNamespace(handle_message=AsyncMock()))
+    event = _async_event("deleg_busy_ack")
+    session_key = event["session_key"]
+    acknowledgements = []
+
+    monkeypatch.setattr(
+        async_delegation, "claim_completion_delivery", lambda *_args: True
+    )
+    monkeypatch.setattr(
+        async_delegation,
+        "complete_completion_delivery",
+        lambda delegation_id, claim_id: acknowledgements.append(
+            (delegation_id, claim_id)
+        ) or True,
+    )
+
+    async def _admit(_text, admitted_event):
+        admitted_event["_durable_delivery_deferred_session_key"] = session_key
+        return True
+
+    monkeypatch.setattr(runner, "_inject_watch_notification", _admit)
+
+    assert asyncio.run(
+        runner._deliver_completion_notification("completion evidence", event)
+    ) is True
+    assert acknowledgements == []
+    assert event["_durable_delivery_deferred_session_key"] == session_key
+    assert runner._completion_deliveries_inflight
+
+    _settle_deferred_completion_deliveries(runner, session_key)
+
+    assert len(acknowledgements) == 1
+    assert acknowledgements[0][0] == "deleg_busy_ack"
+    assert not runner._completion_deliveries_inflight
+    assert runner._completion_deliveries_delivered
 
 
 def _persist_pending_completion(event):

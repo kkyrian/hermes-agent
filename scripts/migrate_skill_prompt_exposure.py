@@ -84,8 +84,12 @@ def _atomic_json_write(path: Path, value: dict) -> None:
 
 
 def _is_live_profile(home: Path) -> bool:
+    default_home = Path.home() / ".hermes"
     try:
-        home.resolve().relative_to(_live_profile_root().resolve())
+        resolved = home.resolve()
+        if resolved == default_home.resolve():
+            return True
+        resolved.relative_to(_live_profile_root().resolve())
         return True
     except ValueError:
         return False
