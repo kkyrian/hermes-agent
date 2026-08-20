@@ -5,7 +5,11 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from agent.system_prompt import build_system_prompt, build_system_prompt_parts
+from agent.system_prompt import (
+    build_system_prompt,
+    build_system_prompt_parts,
+    render_model_visible_context_blocks,
+)
 
 
 def _make_agent(**overrides):
@@ -273,6 +277,21 @@ def test_build_system_prompt_records_stable_prefix():
 
     assert prompt.startswith(agent._cached_system_prompt_static)
     assert prompt[len(agent._cached_system_prompt_static):].startswith("\n\ncontext")
+
+
+def test_model_visible_blocks_return_cached_prompt_tiers():
+    agent = _make_agent()
+    first = {"stable": "stable", "context": "context", "volatile": "day one"}
+    with patch("agent.system_prompt.build_system_prompt_parts", return_value=first):
+        agent._cached_system_prompt = build_system_prompt(agent)
+
+    with patch(
+        "agent.system_prompt.build_system_prompt_parts",
+        return_value={"stable": "stable", "context": "context", "volatile": "day two"},
+    ) as rebuild:
+        assert render_model_visible_context_blocks(agent) == first
+
+    rebuild.assert_not_called()
 
 
 def test_coding_prompt_preserves_legacy_workspace_order(monkeypatch):

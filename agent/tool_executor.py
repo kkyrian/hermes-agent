@@ -2307,6 +2307,7 @@ def _finalize_keyboard_interrupt_batch(
     effective_task_id: str,
     api_call_count: int,
     first_already_emitted: bool = True,
+    finalize: bool = True,
 ) -> None:
     """Finalize cancellation rows before a sequential executor re-raises."""
     calls = list(tool_calls)
@@ -2345,15 +2346,16 @@ def _finalize_keyboard_interrupt_batch(
         stage="keyboard-interrupt tool results",
     ):
         return
-    _finalize_tool_boundary(
-        agent,
-        messages,
-        cancelled_messages,
-        calls,
-        effective_task_id=effective_task_id,
-        api_call_count=api_call_count,
-        budget=_budget_for_agent(agent),
-    )
+    if finalize:
+        _finalize_tool_boundary(
+            agent,
+            messages,
+            cancelled_messages,
+            calls,
+            effective_task_id=effective_task_id,
+            api_call_count=api_call_count,
+            budget=_budget_for_agent(agent),
+        )
 
 
 def execute_tool_calls_sequential(agent, assistant_message, messages: list, effective_task_id: str, api_call_count: int = 0, *, finalize: bool = True) -> None:
@@ -2966,6 +2968,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                     current_function_args=function_args,
                     effective_task_id=effective_task_id,
                     api_call_count=api_call_count,
+                    finalize=finalize,
                 )
                 raise
             except Exception as tool_error:
@@ -3055,6 +3058,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                     current_function_args=function_args,
                     effective_task_id=effective_task_id,
                     api_call_count=api_call_count,
+                    finalize=finalize,
                 )
                 raise
             except Exception as tool_error:
@@ -3315,16 +3319,6 @@ def execute_tool_calls_segmented(agent, assistant_message, messages: list, effec
                     finalize=False,
                 )
         except KeyboardInterrupt:
-            if completed_tool_messages:
-                _finalize_tool_boundary(
-                    agent,
-                    messages,
-                    completed_tool_messages,
-                    completed_calls,
-                    effective_task_id=effective_task_id,
-                    api_call_count=api_call_count,
-                    budget=_budget_for_agent(agent),
-                )
             later_calls = [
                 call
                 for _, later_segment in segments[segment_index + 1:]
@@ -3345,6 +3339,21 @@ def execute_tool_calls_segmented(agent, assistant_message, messages: list, effec
                     effective_task_id=effective_task_id,
                     api_call_count=api_call_count,
                     first_already_emitted=False,
+                    finalize=False,
+                )
+            all_calls = [
+                call for _, segment_calls in segments for call in segment_calls
+            ]
+            all_tool_messages = messages[-len(all_calls):] if all_calls else []
+            if all_tool_messages:
+                _finalize_tool_boundary(
+                    agent,
+                    messages,
+                    all_tool_messages,
+                    all_calls,
+                    effective_task_id=effective_task_id,
+                    api_call_count=api_call_count,
+                    budget=_budget_for_agent(agent),
                 )
             raise
 

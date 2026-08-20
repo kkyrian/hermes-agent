@@ -3822,6 +3822,9 @@ async def _settle_deferred_completion_deliveries(
                 # this event; a crash before then must leave recovery evidence.
                 remaining.append(record)
                 continue
+            if not record.get("fallback_consumed"):
+                remaining.append(record)
+                continue
         elif exact_leftover:
             # Harvesting only moved the evidence into the process-local typed
             # follow-up queue. Keep the durable claim until that recursive

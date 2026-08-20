@@ -402,6 +402,40 @@ def test_same_generation_user_turn_does_not_ack_queued_completion(monkeypatch):
     assert runner._deferred_completion_deliveries[session_key]
 
 
+def test_new_generation_user_turn_does_not_ack_queued_completion(monkeypatch):
+    from tools import async_delegation
+
+    runner = _runner(SimpleNamespace(handle_message=AsyncMock()))
+    session_key = "agent:main:telegram:dm:12345:678"
+    runner._deferred_completion_deliveries = {
+        session_key: [{
+            "text": "completion",
+            "delegation_id": "deleg-new-generation",
+            "claim_id": "claim-new-generation",
+            "generation": 7,
+            "source": SessionSource(
+                platform=Platform.TELEGRAM, chat_id="12345", chat_type="dm"
+            ),
+            "parent_session_id": "",
+            "fallback_queued": True,
+            "siblings": [],
+        }]
+    }
+    acknowledgements = []
+    monkeypatch.setattr(
+        async_delegation,
+        "complete_completion_delivery",
+        lambda delegation_id, _claim_id: acknowledgements.append(delegation_id) or True,
+    )
+
+    asyncio.run(_settle_deferred_completion_deliveries(
+        runner, session_key, 8, {}, turn_completed=True
+    ))
+
+    assert acknowledgements == []
+    assert runner._deferred_completion_deliveries[session_key]
+
+
 def test_terminal_parent_drops_stale_deferred_payload_without_new_fallback(monkeypatch):
     from tools import async_delegation
 

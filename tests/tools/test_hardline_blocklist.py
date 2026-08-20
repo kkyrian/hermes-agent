@@ -122,6 +122,7 @@ _HARDLINE_BLOCK = [
     "find \"$HOME/..\" -depth -delete",
     "cp image.raw /dev/sda -f",
     "sgdisk /dev/sda --zap-all",
+    "echo \"$(echo x > /dev/sda)\"",
     # Compound / subshell variants
     "ls; reboot",
     "echo done && shutdown -h now",
@@ -190,6 +191,8 @@ _HARDLINE_ALLOW = [
     # Reading devices is fine
     "ls /dev/sda",
     "cat /dev/urandom | head -c 10",
+    "wipefs --backup /dev/sda",
+    "wipefs --output-all /dev/sda",
     # Unrelated commands that happen to contain the trigger word
     "grep 'shutdown' logs.txt",
     "echo reboot",
