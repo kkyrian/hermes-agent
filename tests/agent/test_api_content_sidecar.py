@@ -253,7 +253,7 @@ class TestPrologueStamping:
         with patch(
             "hermes_cli.plugins.invoke_hook",
             return_value=[{"context": "PLUGIN-CTX"}],
-        ):
+        ), patch("hermes_cli.plugins.has_hook", return_value=True):
             ctx = _build(agent)
         msg = ctx.messages[ctx.current_turn_user_idx]
         assert msg["content"] == "hello"  # clean content untouched
@@ -266,7 +266,9 @@ class TestPrologueStamping:
 
     def test_no_stamp_without_injections(self):
         agent = _FakeAgent()
-        with patch("hermes_cli.plugins.invoke_hook", return_value=[]):
+        with patch("hermes_cli.plugins.invoke_hook", return_value=[]), patch(
+            "hermes_cli.plugins.has_hook", return_value=True
+        ):
             ctx = _build(agent)
         assert "api_content" not in ctx.messages[ctx.current_turn_user_idx]
         assert agent.api_content_at_persist is None
@@ -280,7 +282,7 @@ class TestPrologueStamping:
         with patch(
             "hermes_cli.plugins.invoke_hook",
             return_value=[{"context": "MUST-DELIVER-SPILL"}],
-        ):
+        ), patch("hermes_cli.plugins.has_hook", return_value=True):
             ctx = _build(
                 agent,
                 user_message=content,
@@ -302,7 +304,7 @@ class TestPrologueStamping:
         with patch(
             "hermes_cli.plugins.invoke_hook",
             return_value=[{"context": "PLUGIN-CTX"}],
-        ):
+        ), patch("hermes_cli.plugins.has_hook", return_value=True):
             ctx = _build(agent)
         assert "api_content" not in ctx.messages[ctx.current_turn_user_idx]
 
@@ -489,6 +491,9 @@ def wire_env():
             side_effect=lambda hook, **kw: (
                 [{"context": "PLUGIN-CTX"}] if hook == "pre_llm_call" else []
             ),
+        ), patch(
+            "hermes_cli.plugins.has_hook",
+            side_effect=lambda hook: hook == "pre_llm_call",
         ):
             yield make_agent, _MockHandler, db, sid
     finally:
@@ -561,7 +566,7 @@ class TestWireInvariant:
             patch("hermes_cli.plugins.invoke_hook", side_effect=_hook),
             patch(
                 "hermes_cli.plugins.has_hook",
-                side_effect=lambda name: name == "post_tool_context",
+                side_effect=lambda name: name in {"pre_llm_call", "post_tool_context"},
             ),
         ):
             agent.run_conversation("inspect it", conversation_history=[], task_id="t")
@@ -655,7 +660,7 @@ class TestPrologueMoaAndInPlaceBackfill:
         with patch(
             "hermes_cli.plugins.invoke_hook",
             return_value=[{"context": "PLUGIN-CTX"}],
-        ):
+        ), patch("hermes_cli.plugins.has_hook", return_value=True):
             ctx = _build(agent, moa_active=True)
         assert "api_content" not in ctx.messages[ctx.current_turn_user_idx]
 
@@ -708,7 +713,7 @@ class TestPrologueMoaAndInPlaceBackfill:
         with patch(
             "hermes_cli.plugins.invoke_hook",
             return_value=[{"context": "PLUGIN-CTX"}],
-        ):
+        ), patch("hermes_cli.plugins.has_hook", return_value=True):
             ctx = _build(agent, conversation_history=history)
 
         msg = ctx.messages[ctx.current_turn_user_idx]

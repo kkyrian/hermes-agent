@@ -14,7 +14,9 @@ import tempfile
 import yaml
 
 
-LIVE_PROFILE_ROOT = Path("/home/kk/.hermes/profiles")
+def _live_profile_root() -> Path:
+    """Return the HOME-anchored profile root used by Hermes profile commands."""
+    return Path.home() / ".hermes" / "profiles"
 
 
 def _load_yaml(path: Path) -> dict:
@@ -83,7 +85,7 @@ def _atomic_json_write(path: Path, value: dict) -> None:
 
 def _is_live_profile(home: Path) -> bool:
     try:
-        home.resolve().relative_to(LIVE_PROFILE_ROOT.resolve())
+        home.resolve().relative_to(_live_profile_root().resolve())
         return True
     except ValueError:
         return False

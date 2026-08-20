@@ -44,7 +44,7 @@ from __future__ import annotations
 
 import logging
 import os
-import tempfile
+import stat
 import uuid
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -142,6 +142,147 @@ def _resolve_spill_dir(
     return base / session_segment
 
 
+def _spill_root_and_segments(
+    directory_override: Optional[str],
+    session_id: Optional[str],
+    *,
+    namespace: str,
+    profile_local: bool,
+) -> tuple[Path, list[str]]:
+    """Return a trusted root plus untrusted path segments to traverse safely."""
+    session_segment = _safe_segment(session_id or "no-session", "no-session")
+    if directory_override and not profile_local:
+        destination = Path(os.path.expanduser(directory_override)).absolute()
+        root = Path(destination.anchor)
+        segments = list(destination.parts[1:])
+    else:
+        from hermes_constants import get_hermes_home
+
+        root = Path(get_hermes_home()).resolve(strict=True)
+        segments = [
+            _safe_segment(segment, "spill")
+            for segment in namespace.replace("\\", "/").split("/")
+            if segment
+        ]
+    segments.append(session_segment)
+    return root, segments
+
+
+def _supports_secure_dir_fd() -> bool:
+    required = ("O_DIRECTORY", "O_NOFOLLOW")
+    return os.name != "nt" and all(hasattr(os, name) for name in required)
+
+
+def _is_link_or_reparse(path: Path) -> bool:
+    """Detect symlinks and Windows junction/reparse-point directories."""
+    try:
+        if path.is_symlink():
+            return True
+        attributes = getattr(os.lstat(path), "st_file_attributes", 0)
+        return bool(attributes & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0))
+    except OSError:
+        return False
+
+
+def _write_spill_with_dir_fd(text: str, root: Path, segments: list[str]) -> Path:
+    directory_fd: Optional[int] = None
+    temp_name: Optional[str] = None
+    try:
+        directory_fd = os.open(
+            root,
+            os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+        )
+        for segment in segments:
+            try:
+                os.mkdir(segment, 0o700, dir_fd=directory_fd)
+            except FileExistsError:
+                pass
+            next_fd = os.open(
+                segment,
+                os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                dir_fd=directory_fd,
+            )
+            os.close(directory_fd)
+            directory_fd = next_fd
+        temp_name = f".spill-{uuid.uuid4().hex}.tmp"
+        final_name = f"{uuid.uuid4().hex}.txt"
+        fd = os.open(
+            temp_name,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+            0o600,
+            dir_fd=directory_fd,
+        )
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(
+            temp_name,
+            final_name,
+            src_dir_fd=directory_fd,
+            dst_dir_fd=directory_fd,
+        )
+        temp_name = None
+        os.chmod(final_name, 0o600, dir_fd=directory_fd, follow_symlinks=False)
+        return root.joinpath(*segments, final_name)
+    finally:
+        if directory_fd is not None and temp_name is not None:
+            try:
+                os.unlink(temp_name, dir_fd=directory_fd)
+            except OSError:
+                pass
+        if directory_fd is not None:
+            try:
+                os.close(directory_fd)
+            except OSError:
+                pass
+
+
+def _write_spill_portable(text: str, root: Path, segments: list[str]) -> Path:
+    """Portable containment path for native Windows and limited POSIX hosts."""
+    root = root.resolve(strict=True)
+    current = root
+    for segment in segments:
+        candidate = current / segment
+        if candidate.exists() or candidate.is_symlink():
+            if _is_link_or_reparse(candidate) or not candidate.is_dir():
+                raise OSError(f"refusing spill through linked path: {candidate}")
+        else:
+            candidate.mkdir(mode=0o700)
+        if _is_link_or_reparse(candidate):
+            raise OSError(f"refusing spill through linked path: {candidate}")
+        resolved = candidate.resolve(strict=True)
+        resolved.relative_to(root)
+        current = candidate
+
+    temp_path = current / f".spill-{uuid.uuid4().hex}.tmp"
+    final_path = current / f"{uuid.uuid4().hex}.txt"
+    fd: Optional[int] = None
+    try:
+        fd = os.open(temp_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            fd = None
+            handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temp_path, final_path)
+        os.chmod(final_path, 0o600)
+        if _is_link_or_reparse(final_path):
+            raise OSError(f"refusing linked spill result: {final_path}")
+        final_path.resolve(strict=True).relative_to(root)
+        return final_path
+    finally:
+        if fd is not None:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+        try:
+            temp_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
 def write_spill_file(
     text: str,
     *,
@@ -151,107 +292,19 @@ def write_spill_file(
     profile_local: bool = False,
 ) -> Dict[str, Any]:
     """Atomically persist spill content and return a structured result."""
-    if profile_local:
-        directory_fd: Optional[int] = None
-        temp_name: Optional[str] = None
-        try:
-            from hermes_constants import get_hermes_home
-
-            root = Path(get_hermes_home()).resolve(strict=True)
-            segments = [
-                _safe_segment(segment, "spill")
-                for segment in namespace.replace("\\", "/").split("/")
-                if segment
-            ]
-            segments.append(_safe_segment(session_id or "no-session", "no-session"))
-            directory_fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
-            for segment in segments:
-                try:
-                    os.mkdir(segment, 0o700, dir_fd=directory_fd)
-                except FileExistsError:
-                    pass
-                next_fd = os.open(
-                    segment,
-                    os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
-                    dir_fd=directory_fd,
-                )
-                os.close(directory_fd)
-                directory_fd = next_fd
-            temp_name = f".spill-{uuid.uuid4().hex}.tmp"
-            final_name = f"{uuid.uuid4().hex}.txt"
-            fd = os.open(
-                temp_name,
-                os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
-                0o600,
-                dir_fd=directory_fd,
-            )
-            with os.fdopen(fd, "w", encoding="utf-8") as handle:
-                handle.write(text)
-                handle.flush()
-                os.fsync(handle.fileno())
-            os.replace(
-                temp_name,
-                final_name,
-                src_dir_fd=directory_fd,
-                dst_dir_fd=directory_fd,
-            )
-            temp_name = None
-            os.chmod(final_name, 0o600, dir_fd=directory_fd, follow_symlinks=False)
-            return {
-                "ok": True,
-                "path": str(root.joinpath(*segments, final_name)),
-                "error": None,
-            }
-        except BaseException as exc:
-            if directory_fd is not None and temp_name is not None:
-                try:
-                    os.unlink(temp_name, dir_fd=directory_fd)
-                except OSError:
-                    pass
-            if not isinstance(exc, Exception):
-                raise
-            logger.warning("hook output spill failed: %s", exc)
-            return {"ok": False, "path": None, "error": str(exc)}
-        finally:
-            if directory_fd is not None:
-                try:
-                    os.close(directory_fd)
-                except OSError:
-                    pass
-
-    temp_path: Optional[Path] = None
     try:
-        spill_dir = _resolve_spill_dir(
+        root, segments = _spill_root_and_segments(
             directory_override,
             session_id,
             namespace=namespace,
             profile_local=profile_local,
         )
-        spill_dir.mkdir(parents=True, exist_ok=True)
-        fd, raw_temp = tempfile.mkstemp(prefix=".spill-", suffix=".tmp", dir=spill_dir)
-        temp_path = Path(raw_temp)
-        try:
-            os.fchmod(fd, 0o600)
-            with os.fdopen(fd, "w", encoding="utf-8") as handle:
-                handle.write(text)
-                handle.flush()
-                os.fsync(handle.fileno())
-            spill_path = spill_dir / f"{uuid.uuid4().hex}.txt"
-            os.replace(temp_path, spill_path)
-            os.chmod(spill_path, 0o600)
-        except BaseException:
-            try:
-                os.close(fd)
-            except OSError:
-                pass
-            raise
+        if _supports_secure_dir_fd():
+            spill_path = _write_spill_with_dir_fd(text, root, segments)
+        else:
+            spill_path = _write_spill_portable(text, root, segments)
         return {"ok": True, "path": str(spill_path), "error": None}
     except BaseException as exc:
-        if temp_path is not None:
-            try:
-                temp_path.unlink(missing_ok=True)
-            except OSError:
-                pass
         if not isinstance(exc, Exception):
             raise
         logger.warning("hook output spill failed: %s", exc)

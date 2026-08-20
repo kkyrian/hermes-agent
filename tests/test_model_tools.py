@@ -10,6 +10,7 @@ from model_tools import (
     get_toolset_for_tool,
     _AGENT_LOOP_TOOLS,
     _LEGACY_TOOLSET_MAP,
+    _post_tool_call_file_metadata,
     TOOL_TO_TOOLSET_MAP,
 )
 
@@ -105,6 +106,21 @@ class TestHandleFunctionCall:
         )
         assert post_call.kwargs["resolved_paths"] == [str(first), str(second)]
         assert post_call.kwargs["cwd"] == str(workspace)
+
+    def test_non_success_file_status_omits_authoritative_paths(self, tmp_path, monkeypatch):
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        monkeypatch.setenv("TERMINAL_CWD", str(workspace))
+
+        resolved_paths, cwd = _post_tool_call_file_metadata(
+            "write_file",
+            {"path": "not-written.md", "content": "x"},
+            '{"cancelled":true}',
+            task_id="scope",
+            status="cancelled",
+        )
+        assert resolved_paths is None
+        assert cwd is None
 
     def test_terminal_nonzero_exit_is_reported_as_error(self):
         result = json.dumps({"output": "", "exit_code": 1, "error": None})

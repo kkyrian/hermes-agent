@@ -1231,38 +1231,42 @@ def build_turn_context(
     # Plugin hook: pre_llm_call (context injected into user message, not system prompt).
     plugin_user_context = ""
     try:
+        from hermes_cli.lifecycle import has_hook as _has_hook
         from hermes_cli.lifecycle import invoke_hook as _invoke_hook
-        try:
-            from agent.system_prompt import render_model_visible_context_blocks
+        if not _has_hook("pre_llm_call"):
+            _pre_results = []
+        else:
+            try:
+                from agent.system_prompt import render_model_visible_context_blocks
 
-            _model_visible_context_blocks = render_model_visible_context_blocks(
-                agent, system_message=system_message,
+                _model_visible_context_blocks = render_model_visible_context_blocks(
+                    agent, system_message=system_message,
+                )
+            except Exception as _render_exc:
+                logger.warning("model-visible context render failed: %s", _render_exc)
+                _model_visible_context_blocks = {}
+            try:
+                from tools.file_tools import _resolve_base_dir
+
+                _logical_cwd = str(_resolve_base_dir(effective_task_id))
+            except Exception:
+                _logical_cwd = None
+            _pre_results = _invoke_hook(
+                "pre_llm_call",
+                session_id=agent.session_id,
+                task_id=effective_task_id,
+                turn_id=turn_id,
+                user_message=original_user_message,
+                conversation_history=list(messages),
+                is_first_turn=(not bool(conversation_history)),
+                model=agent.model,
+                platform=getattr(agent, "platform", None) or "",
+                prompt_reset=_preflight_compressed,
+                parent_session_id=getattr(agent, "_parent_session_id", None) or "",
+                sender_id=getattr(agent, "_user_id", None) or "",
+                model_visible_context_blocks=_model_visible_context_blocks,
+                cwd=_logical_cwd,
             )
-        except Exception as _render_exc:
-            logger.warning("model-visible context render failed: %s", _render_exc)
-            _model_visible_context_blocks = {}
-        try:
-            from tools.file_tools import _resolve_base_dir
-
-            _logical_cwd = str(_resolve_base_dir(effective_task_id))
-        except Exception:
-            _logical_cwd = None
-        _pre_results = _invoke_hook(
-            "pre_llm_call",
-            session_id=agent.session_id,
-            task_id=effective_task_id,
-            turn_id=turn_id,
-            user_message=original_user_message,
-            conversation_history=list(messages),
-            is_first_turn=(not bool(conversation_history)),
-            model=agent.model,
-            platform=getattr(agent, "platform", None) or "",
-            prompt_reset=_preflight_compressed,
-            parent_session_id=getattr(agent, "_parent_session_id", None) or "",
-            sender_id=getattr(agent, "_user_id", None) or "",
-            model_visible_context_blocks=_model_visible_context_blocks,
-            cwd=_logical_cwd,
-        )
         _ctx_parts: list[str] = []
         _spill_required = False
         _spill_namespace = "hook_outputs"

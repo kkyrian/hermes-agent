@@ -1142,7 +1142,7 @@ def _post_tool_call_file_metadata(
     status: str,
 ) -> tuple[Optional[List[str]], Optional[str]]:
     """Return host-authoritative file paths and cwd for file-tool hooks."""
-    if function_name not in {"read_file", "write_file", "patch"} or status == "error":
+    if function_name not in {"read_file", "write_file", "patch"} or status != "ok":
         return None, None
 
     try:
