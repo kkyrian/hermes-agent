@@ -19,9 +19,12 @@ from gateway.config import Platform
 from gateway.run import (
     GatewayRunner,
     _dequeue_typed_internal_followup,
+    _mark_deferred_completion_fallback_consumed,
     _renew_deferred_completion_claim,
     _settle_deferred_completion_deliveries,
+    _tag_deferred_completion_fallback,
 )
+from gateway.platforms.base import MessageEvent
 from gateway.session import SessionSource
 from tools.process_registry import ProcessRegistry, ProcessSession
 
@@ -288,6 +291,20 @@ def test_harvested_leftover_keeps_durable_claim_until_recursive_consumption(
         "fallback_queued"
     ]
 
+    fallback = MessageEvent(
+        text="completion evidence",
+        source=SessionSource(
+            platform=Platform.TELEGRAM, chat_id="12345", chat_type="dm"
+        ),
+        internal=True,
+    )
+    _tag_deferred_completion_fallback(
+        fallback, runner._deferred_completion_deliveries[session_key][0]
+    )
+    assert _mark_deferred_completion_fallback_consumed(
+        runner, session_key, fallback
+    )
+
     asyncio.run(
         _settle_deferred_completion_deliveries(
             runner, session_key, 7, {}, turn_completed=True
@@ -339,11 +356,50 @@ def test_later_turn_requeues_deferred_payload_before_ack(monkeypatch):
 
     # The next turn dequeues the typed follow-up, then settlement may retire
     # the durable claim because the evidence has actually been consumed.
-    assert _dequeue_typed_internal_followup(runner, session_key).text == "old evidence"
+    fallback = _dequeue_typed_internal_followup(runner, session_key)
+    assert fallback.text == "old evidence"
+    assert _mark_deferred_completion_fallback_consumed(
+        runner, session_key, fallback
+    )
     asyncio.run(_settle_deferred_completion_deliveries(
         runner, session_key, 5, {}, turn_completed=True
     ))
     assert acknowledgements == ["deleg_old_turn"]
+
+
+def test_same_generation_user_turn_does_not_ack_queued_completion(monkeypatch):
+    from tools import async_delegation
+
+    runner = _runner(SimpleNamespace(handle_message=AsyncMock()))
+    runner._typed_internal_followups = {}
+    session_key = "agent:main:telegram:dm:12345:678"
+    runner._deferred_completion_deliveries = {
+        session_key: [{
+            "text": "completion",
+            "delegation_id": "deleg-user-first",
+            "claim_id": "claim-user-first",
+            "generation": 7,
+            "source": SessionSource(
+                platform=Platform.TELEGRAM, chat_id="12345", chat_type="dm"
+            ),
+            "parent_session_id": "",
+            "fallback_queued": True,
+            "siblings": [],
+        }]
+    }
+    acknowledgements = []
+    monkeypatch.setattr(
+        async_delegation,
+        "complete_completion_delivery",
+        lambda delegation_id, _claim_id: acknowledgements.append(delegation_id) or True,
+    )
+
+    asyncio.run(_settle_deferred_completion_deliveries(
+        runner, session_key, 7, {}, turn_completed=True
+    ))
+
+    assert acknowledgements == []
+    assert runner._deferred_completion_deliveries[session_key]
 
 
 def test_terminal_parent_drops_stale_deferred_payload_without_new_fallback(monkeypatch):
