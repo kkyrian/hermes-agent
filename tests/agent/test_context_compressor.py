@@ -14,6 +14,7 @@ from agent.context_compressor import (
     _PRUNE_MIN_CHARS,
     _summarize_tool_result,
     _is_summary_access_or_quota_error,
+    _synthetic_user_row,
 )
 from hermes_state import SessionDB
 
@@ -23,6 +24,15 @@ class StubProviderError(Exception):
         super().__init__(message)
         self.status_code = status_code
         self.response = response
+
+
+def test_subagent_internal_event_is_synthetic_compression_provenance(compressor):
+    marker = "[HERMES INTERNAL EVENT — SUBAGENT RESULT — NOT USER INPUT] done"
+
+    assert _synthetic_user_row(marker) is True
+    assert compressor._is_synthetic_compression_user_turn(
+        {"role": "user", "content": marker}
+    ) is True
 
 
 @pytest.fixture()

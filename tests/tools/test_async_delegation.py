@@ -65,6 +65,38 @@ def _drain_for(delegation_id, timeout=5.0):
     return None
 
 
+def test_completion_claim_renewal_extends_only_the_matching_pending_claim(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    delegation_id = "deleg_renew_claim"
+    ad._persist_dispatch(
+        {
+            "delegation_id": delegation_id,
+            "session_key": "session",
+            "origin_ui_session_id": "",
+            "parent_session_id": "parent",
+            "dispatched_at": 1.0,
+        }
+    )
+    ad._persist_completion(
+        {"delegation_id": delegation_id, "status": "completed", "completed_at": 2.0},
+        {"status": "completed", "summary": "done"},
+    )
+    monkeypatch.setattr(ad.time, "time", lambda: 100.0)
+    assert ad.claim_completion_delivery(delegation_id, "claim-a") is True
+    monkeypatch.setattr(ad.time, "time", lambda: 200.0)
+
+    assert ad.renew_completion_delivery(delegation_id, "claim-a") is True
+    assert ad.renew_completion_delivery(delegation_id, "claim-b") is False
+    with ad._transaction() as conn:
+        claimed_at = conn.execute(
+            "SELECT delivery_claimed_at FROM async_delegations WHERE delegation_id=?",
+            (delegation_id,),
+        ).fetchone()[0]
+    assert claimed_at == 200.0
+
+
 def test_active_for_session_counts_every_live_delegation_state():
     with ad._records_lock:
         ad._records.update(
@@ -831,4 +863,3 @@ def test_batch_truncation_banner_marks_only_truncated_task():
     banner_pos = text.index("TRUNCATED")
     # The header banner for task 2 appears after task 1's summary.
     assert banner_pos > clean_pos
-

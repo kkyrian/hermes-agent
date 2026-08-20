@@ -13,6 +13,7 @@ extracted functions reach back through the ``run_agent`` module via
 from __future__ import annotations
 
 import concurrent.futures
+import copy
 import json
 from pathlib import Path
 import logging
@@ -121,13 +122,14 @@ def _finalize_tool_result_batch(
     *,
     effective_task_id: str,
     api_call_count: int,
+    persist: bool = True,
 ) -> bool:
-    """Append post-budget plugin context and persist exact provider bytes.
+    """Append post-budget plugin context and optionally persist exact bytes.
 
     Tool rows are inserted incrementally for crash safety before the whole batch
-    is known. Callers run aggregate budgeting, internal-event injection, and
-    steering first; this final step appends plugin context and backfills every
-    finalized row by tool_call_id so resumed-session replay is byte-identical.
+    is known. Normal execution defers persistence until aggregate budgeting,
+    internal-event injection, and steering have produced the exact provider
+    bytes. Focused callers may retain the historical one-step behavior.
     """
     try:
         from hermes_cli.lifecycle import has_hook, invoke_hook
@@ -232,10 +234,17 @@ def _finalize_tool_result_batch(
                         {"type": "text", "text": "\n\n" + context},
                     ]
 
+    if persist:
+        _persist_final_tool_result_batch(agent, tool_messages)
+    return bool(has_context_hook)
+
+
+def _persist_final_tool_result_batch(agent, tool_messages: list[dict]) -> None:
+    """Backfill finalized tool rows so durable replay matches provider input."""
     session_db = getattr(agent, "_session_db", None)
     session_id = getattr(agent, "session_id", None)
     if session_db is None or not session_id:
-        return bool(has_context_hook)
+        return
 
     for message in tool_messages:
         tool_call_id = str(message.get("tool_call_id") or "")
@@ -263,8 +272,102 @@ def _finalize_tool_result_batch(
         if updated != 1:
             agent._incremental_persistence_failed = True
             agent._last_persistence_error_cause = persistence_cause
-            return True
-    return bool(has_context_hook)
+            return
+
+
+def _finalize_tool_boundary(
+    agent,
+    messages: list,
+    tool_messages: list[dict],
+    tool_calls,
+    *,
+    effective_task_id: str,
+    api_call_count: int,
+    budget: BudgetConfig,
+    stage: str,
+) -> None:
+    """Finalize one provider-visible tool boundary in authority order."""
+    if not tool_messages:
+        return
+    enforce_turn_budget(
+        tool_messages,
+        env=get_active_env(effective_task_id),
+        config=budget,
+    )
+    base_contents = [copy.deepcopy(message.get("content", "")) for message in tool_messages]
+    apply_internal_events = getattr(
+        agent, "_apply_pending_internal_events_to_tool_results", None
+    )
+    if callable(apply_internal_events):
+        apply_internal_events(messages, len(tool_messages))
+    agent._apply_pending_steer_to_tool_results(messages, len(tool_messages))
+    authority_contents = [
+        copy.deepcopy(message.get("content", "")) for message in tool_messages
+    ]
+    _finalize_tool_result_batch(
+        agent,
+        tool_messages,
+        tool_calls,
+        effective_task_id=effective_task_id,
+        api_call_count=api_call_count,
+        persist=False,
+    )
+    _rebudget_tool_bases_preserving_suffixes(
+        tool_messages,
+        base_contents,
+        authority_contents,
+        env=get_active_env(effective_task_id),
+        budget=budget,
+    )
+    _persist_final_tool_result_batch(agent, tool_messages)
+    _flush_session_db_after_tool_progress(agent, messages, stage=stage)
+
+
+def _rebudget_tool_bases_preserving_suffixes(
+    tool_messages: list[dict],
+    base_contents: list,
+    authority_contents: list,
+    *,
+    env,
+    budget: BudgetConfig,
+) -> None:
+    """Rebudget base output while preserving internal/steer/hook suffix order."""
+    suffixes: list[tuple[str, str] | None] = []
+    fixed_size = 0
+    original_contents = [message.get("content", "") for message in tool_messages]
+    for base, authority, final in zip(
+        base_contents, authority_contents, original_contents
+    ):
+        if (
+            isinstance(base, str)
+            and isinstance(authority, str)
+            and isinstance(final, str)
+            and authority.startswith(base)
+            and final.startswith(authority)
+        ):
+            authority_suffix = authority[len(base):]
+            hook_suffix = final[len(authority):]
+            suffixes.append((authority_suffix, hook_suffix))
+            fixed_size += len(authority_suffix) + len(hook_suffix)
+        else:
+            suffixes.append(None)
+            fixed_size += len(_multimodal_text_summary(final))
+
+    base_budget = BudgetConfig(
+        default_result_size=budget.default_result_size,
+        turn_budget=max(0, budget.turn_budget - fixed_size),
+        preview_size=budget.preview_size,
+        tool_overrides=budget.tool_overrides,
+    )
+    for message, base, suffix in zip(tool_messages, base_contents, suffixes):
+        message["content"] = base if suffix is not None else ""
+    enforce_turn_budget(tool_messages, env=env, config=base_budget)
+    for message, suffix, original in zip(tool_messages, suffixes, original_contents):
+        if suffix is None:
+            message["content"] = original
+            continue
+        authority_suffix, hook_suffix = suffix
+        message["content"] = message.get("content", "") + authority_suffix + hook_suffix
 
 # Maximum number of concurrent worker threads for parallel tool execution.
 # Mirrors the constant in ``run_agent`` for tests/imports that look here.
@@ -1299,29 +1402,15 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                 stage=f"cancelled tool result {tc.function.name}",
             )
         if finalize and cancelled_messages:
-            enforce_turn_budget(
-                cancelled_messages,
-                env=get_active_env(effective_task_id),
-                config=_tool_budget,
-            )
-            _apply_internal_events = getattr(
-                agent, "_apply_pending_internal_events_to_tool_results", None
-            )
-            if callable(_apply_internal_events) and _apply_internal_events(
-                messages, num_tools
-            ):
-                _flush_session_db_after_tool_progress(
-                    agent,
-                    messages,
-                    stage="internal event after cancelled concurrent tool batch",
-                )
-            agent._apply_pending_steer_to_tool_results(messages, num_tools)
-            _finalize_tool_result_batch(
+            _finalize_tool_boundary(
                 agent,
+                messages,
                 cancelled_messages,
                 tool_calls,
                 effective_task_id=effective_task_id,
                 api_call_count=api_call_count,
+                budget=_tool_budget,
+                stage="finalized cancelled concurrent tool batch",
             )
         return
 
@@ -2091,44 +2180,18 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
             except Exception as cb_err:
                 logging.debug("Tool output risk callback error: %s", cb_err)
 
-    # ── Per-turn aggregate budget enforcement ─────────────────────────
-    # Keep /steer pending until the final post-budget drain below.  The model
-    # cannot observe a partial batch, while an early drain can be discarded
-    # when aggregate budget enforcement replaces that tool result.
+    # ── Whole-turn boundary finalization ───────────────────────────────
     num_tools = len(parsed_calls)
-    turn_tool_msgs = []
     if finalize and num_tools > 0:
-        turn_tool_msgs = messages[-num_tools:]
-        enforce_turn_budget(
-            turn_tool_msgs,
-            env=get_active_env(effective_task_id),
-            config=_tool_budget,
-        )
-
-    # ── Typed internal-event injection ────────────────────────────────
-    if finalize and num_tools > 0:
-        _apply_internal_events = getattr(
-            agent, "_apply_pending_internal_events_to_tool_results", None
-        )
-        if callable(_apply_internal_events) and _apply_internal_events(
-            messages, num_tools
-        ):
-            _flush_session_db_after_tool_progress(
-                agent, messages, stage="internal event after concurrent tool batch"
-            )
-
-    # ── /steer injection ──────────────────────────────────────────────
-    # Append any pending user steer text to the last tool result so the
-    # agent sees it on its next iteration. Runs AFTER budget enforcement
-    # so the steer marker is never truncated. See steer() for details.
-    if finalize and num_tools > 0:
-        agent._apply_pending_steer_to_tool_results(messages, num_tools)
-        _finalize_tool_result_batch(
+        _finalize_tool_boundary(
             agent,
-            turn_tool_msgs,
+            messages,
+            messages[-num_tools:],
             [item[0] for item in parsed_calls],
             effective_task_id=effective_task_id,
             api_call_count=api_call_count,
+            budget=_tool_budget,
+            stage="finalized concurrent tool batch",
         )
 
 
@@ -2201,29 +2264,15 @@ def _finalize_keyboard_interrupt_batch(
         stage="keyboard-interrupt tool results",
     ):
         return
-    enforce_turn_budget(
-        cancelled_messages,
-        env=get_active_env(effective_task_id),
-        config=_budget_for_agent(agent),
-    )
-    apply_internal_events = getattr(
-        agent, "_apply_pending_internal_events_to_tool_results", None
-    )
-    if callable(apply_internal_events) and apply_internal_events(
-        messages, len(cancelled_messages)
-    ):
-        _flush_session_db_after_tool_progress(
-            agent,
-            messages,
-            stage="internal event after keyboard-interrupt tool batch",
-        )
-    agent._apply_pending_steer_to_tool_results(messages, len(cancelled_messages))
-    _finalize_tool_result_batch(
+    _finalize_tool_boundary(
         agent,
+        messages,
         cancelled_messages,
         calls,
         effective_task_id=effective_task_id,
         api_call_count=api_call_count,
+        budget=_budget_for_agent(agent),
+        stage="finalized keyboard-interrupt tool batch",
     )
 
 
@@ -3122,43 +3171,18 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                     return
             break
 
-    # ── Per-turn aggregate budget enforcement ─────────────────────────
-    # Keep /steer pending until the final post-budget drain below.  The model
-    # only receives this batch after all calls finish, and an early drain can
-    # be discarded when aggregate budget enforcement replaces a tool result.
+    # ── Whole-turn boundary finalization ───────────────────────────────
     num_tools_seq = len(assistant_message.tool_calls)
-    turn_tool_msgs_seq = []
     if finalize and num_tools_seq > 0:
-        turn_tool_msgs_seq = messages[-num_tools_seq:]
-        enforce_turn_budget(
-            turn_tool_msgs_seq,
-            env=get_active_env(effective_task_id),
-            config=_tool_budget,
-        )
-
-    # ── Typed internal-event injection ────────────────────────────────
-    if finalize and num_tools_seq > 0:
-        _apply_internal_events = getattr(
-            agent, "_apply_pending_internal_events_to_tool_results", None
-        )
-        if callable(_apply_internal_events) and _apply_internal_events(
-            messages, num_tools_seq
-        ):
-            _flush_session_db_after_tool_progress(
-                agent, messages, stage="internal event after sequential tool batch"
-            )
-
-    # ── /steer injection ──────────────────────────────────────────────
-    # See _execute_tool_calls_parallel for the rationale. Same hook,
-    # applied to sequential execution as well.
-    if finalize and num_tools_seq > 0:
-        agent._apply_pending_steer_to_tool_results(messages, num_tools_seq)
-        _finalize_tool_result_batch(
+        _finalize_tool_boundary(
             agent,
-            turn_tool_msgs_seq,
+            messages,
+            messages[-num_tools_seq:],
             assistant_message.tool_calls,
             effective_task_id=effective_task_id,
             api_call_count=api_call_count,
+            budget=_tool_budget,
+            stage="finalized sequential tool batch",
         )
 
 
@@ -3213,17 +3237,15 @@ def execute_tool_calls_segmented(agent, assistant_message, messages: list, effec
                 )
         except KeyboardInterrupt:
             if completed_tool_messages:
-                enforce_turn_budget(
-                    completed_tool_messages,
-                    env=get_active_env(effective_task_id),
-                    config=_budget_for_agent(agent),
-                )
-                _finalize_tool_result_batch(
+                _finalize_tool_boundary(
                     agent,
+                    messages,
                     completed_tool_messages,
                     completed_calls,
                     effective_task_id=effective_task_id,
                     api_call_count=api_call_count,
+                    budget=_budget_for_agent(agent),
+                    stage="finalized completed segmented tool batch",
                 )
             later_calls = [
                 call
@@ -3257,28 +3279,15 @@ def execute_tool_calls_segmented(agent, assistant_message, messages: list, effec
     total_tools = len(assistant_message.tool_calls)
     if total_tools > 0:
         _tool_budget = _budget_for_agent(agent)
-        turn_tool_msgs = messages[-total_tools:]
-        enforce_turn_budget(
-            turn_tool_msgs,
-            env=get_active_env(effective_task_id),
-            config=_tool_budget,
-        )
-        _apply_internal_events = getattr(
-            agent, "_apply_pending_internal_events_to_tool_results", None
-        )
-        if callable(_apply_internal_events) and _apply_internal_events(
-            messages, total_tools
-        ):
-            _flush_session_db_after_tool_progress(
-                agent, messages, stage="internal event after segmented tool batch"
-            )
-        agent._apply_pending_steer_to_tool_results(messages, total_tools)
-        _finalize_tool_result_batch(
+        _finalize_tool_boundary(
             agent,
-            turn_tool_msgs,
+            messages,
+            messages[-total_tools:],
             assistant_message.tool_calls,
             effective_task_id=effective_task_id,
             api_call_count=api_call_count,
+            budget=_tool_budget,
+            stage="finalized segmented tool batch",
         )
 
 

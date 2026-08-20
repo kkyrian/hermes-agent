@@ -127,6 +127,15 @@ class TestSanitizeApiMessages:
 
 class TestCapDelegateTaskCalls:
 
+    def test_depth_override_applies_to_multiple_call_shape(self, monkeypatch):
+        monkeypatch.setattr(
+            "tools.delegate_tool._get_max_concurrent_children",
+            lambda depth=None: 2 if depth == 1 else MAX_CONCURRENT_CHILDREN,
+        )
+        tcs = [make_tc("delegate_task") for _ in range(4)]
+        out = AIAgent._cap_delegate_task_calls(tcs, depth=1)
+        assert len(out) == 2
+
     def test_excess_delegates_truncated(self):
         tcs = [make_tc("delegate_task") for _ in range(MAX_CONCURRENT_CHILDREN + 2)]
         out = AIAgent._cap_delegate_task_calls(tcs)

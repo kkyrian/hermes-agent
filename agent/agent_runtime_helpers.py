@@ -4377,7 +4377,7 @@ def apply_pending_steer_to_tool_results(agent, messages: list, num_tool_msgs: in
 def apply_pending_internal_events_to_tool_results(
     agent, messages: list, num_tool_msgs: int
 ) -> bool:
-    """Append one durable hidden internal-context row after the tool batch."""
+    """Fold pending internal evidence into the final tool-result carrier."""
     if num_tool_msgs <= 0 or not messages:
         return False
     pending = agent._take_internal_events_at_boundary()
@@ -4389,16 +4389,26 @@ def apply_pending_internal_events_to_tool_results(
         from agent.prompt_builder import format_steer_marker
 
         payload += format_steer_marker(steer)
-    messages.append(
-        {
-            "role": "user",
-            "content": payload,
-            "_internal_event_synthetic": True,
-            "display_kind": "hidden",
-        }
+    target_idx = next(
+        (
+            index
+            for index in range(len(messages) - 1, max(-1, len(messages) - num_tool_msgs - 1), -1)
+            if messages[index].get("role") == "tool"
+        ),
+        None,
     )
+    if target_idx is None:
+        return False
+    marker = "\n\n" + payload
+    content = messages[target_idx].get("content", "")
+    if isinstance(content, str):
+        messages[target_idx]["content"] = content + marker
+    else:
+        blocks = list(content) if isinstance(content, list) else []
+        blocks.append({"type": "text", "text": marker.lstrip()})
+        messages[target_idx]["content"] = blocks
     _ra().logger.info(
-        "Delivered %d internal event(s) after tool batch",
+        "Delivered %d internal event(s) in final tool-result carrier",
         len(pending),
     )
     return True

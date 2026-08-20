@@ -514,7 +514,7 @@ _RM_FLAG_PREFIX = _CMDPOS + r'rm\s+(-[^\s]*\s+)*'
 
 _HARDLINE_BLOCK_DEVICE = (
     r'/dev/(?:sd[a-z][a-z0-9]*|hd[a-z][a-z0-9]*|vd[a-z][a-z0-9]*|'
-    r'xvd[a-z][a-z0-9]*|mmcblk\d+(?:p\d+)?|nvme\d+n\d+(?:p\d+)?|'
+    r'xvd[a-z][a-z0-9]*|mmcblk\d+(?:p\d+)?|nvme\d+(?:n\d+(?:p\d+)?)?|'
     r'dm-\d+|mapper/[a-z0-9_.+:-]+|disk/by-(?:id|path|uuid|partuuid|label|partlabel)/'
     r'[a-z0-9_.+:@-]+)'
 )

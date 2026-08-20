@@ -8,6 +8,7 @@ from agent.tool_executor import (
     _cache_post_tool_context_metadata,
     _finalize_keyboard_interrupt_batch,
     _finalize_tool_result_batch,
+    _finalize_tool_boundary,
 )
 from hermes_state import SessionDB
 from tools.budget_config import BudgetConfig
@@ -19,6 +20,15 @@ def _tool_call(name: str, call_id: str, arguments: str = "{}"):
         id=call_id,
         function=SimpleNamespace(name=name, arguments=arguments),
     )
+
+
+def _append_internal(messages, _count):
+    messages[-1]["content"] += "\n\nINTERNAL-EVIDENCE"
+    return True
+
+
+def _append_steer(messages, _count):
+    messages[-1]["content"] += "\n\nSTEER-GUIDANCE"
 
 
 def test_post_tool_context_runs_after_budget_and_persists_exact_provider_bytes(tmp_path):
@@ -98,6 +108,57 @@ def test_post_tool_context_runs_after_budget_and_persists_exact_provider_bytes(t
     replay = db.get_messages_as_conversation(session_id)
     assert replay[0]["content"] == tool_messages[0]["content"]
     assert replay[1]["content"] == tool_messages[1]["content"]
+    db.close()
+
+
+def test_post_tool_context_is_rebounded_before_final_persistence(tmp_path):
+    db = SessionDB(db_path=tmp_path / "state.db")
+    session_id = "post-hook-rebudget"
+    db.create_session(session_id, source="cli")
+    db.append_message(session_id, "tool", content="x" * 40_000, tool_call_id="call-1")
+    db.append_message(session_id, "tool", content="y" * 40_000, tool_call_id="call-2")
+    agent = SimpleNamespace(
+        session_id=session_id,
+        _session_db=db,
+        _current_turn_id="turn-rebudget",
+        _post_tool_context_metadata={},
+        _incremental_persistence_failed=False,
+        _flush_messages_to_session_db=lambda *_args, **_kwargs: True,
+        _apply_pending_internal_events_to_tool_results=_append_internal,
+        _apply_pending_steer_to_tool_results=_append_steer,
+    )
+    messages = [
+        {"role": "tool", "tool_call_id": "call-1", "content": "x" * 40_000},
+        {"role": "tool", "tool_call_id": "call-2", "content": "y" * 40_000},
+    ]
+    calls = [_tool_call("read_file", "call-1"), _tool_call("read_file", "call-2")]
+
+    with (
+        patch("hermes_cli.lifecycle.has_hook", return_value=True),
+        patch(
+            "hermes_cli.lifecycle.invoke_hook",
+            return_value=[{"context": "HOOK-CONTEXT-" + "z" * 40_000}],
+        ),
+    ):
+        _finalize_tool_boundary(
+            agent,
+            messages,
+            messages,
+            calls,
+            effective_task_id="task-rebudget",
+            api_call_count=1,
+            budget=BudgetConfig(turn_budget=50_000, preview_size=1_000),
+            stage="test post-hook rebudget",
+        )
+
+    assert sum(len(message["content"]) for message in messages) < 60_000
+    assert messages[-1]["content"].index("INTERNAL-EVIDENCE") < messages[-1][
+        "content"
+    ].index("STEER-GUIDANCE") < messages[-1]["content"].index("HOOK-CONTEXT")
+    replay = db.get_messages_as_conversation(session_id)
+    assert [row["content"] for row in replay] == [
+        message["content"] for message in messages
+    ]
     db.close()
 
 
