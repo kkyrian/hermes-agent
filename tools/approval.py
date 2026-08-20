@@ -524,6 +524,9 @@ _HARDLINE_POST_COMMAND_REDIRECTIONS = (
 _HARDLINE_FIND_PATH = _hardline_rm_path(
     r'/|' + _HARDLINE_SYSTEM_DIRS + r'|~|\$\{?HOME\}?'
 )
+_HARDLINE_FIND_LEADING_OPTIONS = (
+    r'(?:(?:-[HLP]|-O\S+|--)\s+|(?:-D\s+\S+\s+))*'
+)
 
 HARDLINE_PATTERNS = [
     # rm recursive targeting the root filesystem or protected roots.
@@ -554,7 +557,7 @@ HARDLINE_PATTERNS = [
     (_CMDPOS + rf'nvme\s+(?:format|sanitize)\b[^\n]*["\']?{_HARDLINE_BLOCK_DEVICE}\b', "destructive NVMe format/sanitize"),
     (_CMDPOS + rf'(?:cp\b[^\n]*\s+["\']?{_HARDLINE_BLOCK_DEVICE}["\']?{_HARDLINE_POST_COMMAND_REDIRECTIONS}\s*(?:$|\n|[;|&)])|tee\b[^\n]*["\']?{_HARDLINE_BLOCK_DEVICE}\b)', "write to an entire raw block device"),
     # Non-rm spellings of the same unrecoverable recursive deletion floor.
-    (_CMDPOS + r'find\s+(?:-[^\s]+\s+)*' + _HARDLINE_FIND_PATH + r'[^\n]*-delete\b', "recursive find deletion of root/system/home"),
+    (_CMDPOS + r'find\s+' + _HARDLINE_FIND_LEADING_OPTIONS + _HARDLINE_FIND_PATH + r'[^\n]*-delete\b', "recursive find deletion of root/system/home"),
     # Whole storage-pool / volume destruction has no ordinary recovery path.
     (_CMDPOS + r'(?:(?:zpool|zfs)\s+destroy|(?:lvremove|vgremove|pvremove))\b', "destroy a ZFS or LVM storage layer"),
     # Fork bomb (classic shell form)
