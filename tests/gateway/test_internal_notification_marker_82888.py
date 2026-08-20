@@ -112,6 +112,14 @@ def _user_entries(calls):
     ]
 
 
+def test_recursive_internal_followup_uses_internal_display_kind():
+    assert (
+        gateway_run._internal_event_display_kind(_event(internal=True))
+        == "internal_notification"
+    )
+    assert gateway_run._internal_event_display_kind(_event(internal=False)) is None
+
+
 # ── 1+2: the marker is threaded to the agent run for internal events only ──
 
 

@@ -3494,6 +3494,11 @@ def _is_control_interrupt_message(message: Optional[str]) -> bool:
     return normalized in _CONTROL_INTERRUPT_MESSAGES
 
 
+def _internal_event_display_kind(event: Any) -> Optional[str]:
+    """Return the persisted presentation type for a synthetic gateway turn."""
+    return "internal_notification" if getattr(event, "internal", False) else None
+
+
 def _pending_internal_event_from_result(
     result: Optional[Dict[str, Any]],
     source: Any,
@@ -3764,7 +3769,14 @@ async def _settle_deferred_completion_deliveries(
                 # this event; a crash before then must leave recovery evidence.
                 remaining.append(record)
                 continue
-        elif not turn_completed and not exact_leftover:
+        elif exact_leftover:
+            # Harvesting only moved the evidence into the process-local typed
+            # follow-up queue. Keep the durable claim until that recursive
+            # turn consumes it so a crash remains recoverable.
+            record["fallback_queued"] = True
+            remaining.append(record)
+            continue
+        elif not turn_completed:
             # The admitting turn did not return and its exact payload was not
             # harvested into the fallback queue. Keep the durable claim for
             # lease expiry/replay rather than letting another turn ack it.
@@ -19391,9 +19403,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # content are untouched — display_kind is a DB-only sidecar stripped
         # from every provider-bound payload (see conversation_loop's
         # api_msg.pop("display_kind")).
-        persist_user_display_kind = (
-            "internal_notification" if getattr(event, "internal", False) else None
-        )
+        persist_user_display_kind = _internal_event_display_kind(event)
         try:
             _pcfg = _load_gateway_config()
             _redact_pii = bool((_pcfg.get("privacy") or {}).get("redact_pii", False))
@@ -30122,6 +30132,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     event_message_id=next_message_id,
                     channel_prompt=next_channel_prompt,
                     message_type=next_message_type,
+                    persist_user_display_kind=_internal_event_display_kind(
+                        pending_event
+                    ),
                 )
                 return _preserve_queued_followup_history_offset(result, followup_result)
         finally:
