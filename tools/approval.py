@@ -470,6 +470,7 @@ _CMDPOS = (
     r'(?:sudo\s+(?:-[^\s]+\s+)*)?'  # optional sudo with flags
     r'(?:env\s+(?:\w+=\S*\s+)*)?'   # optional env with VAR=VAL pairs
     r'(?:(?:exec|nohup|setsid|time)\s+|command\s+(?:-[^\s]+\s+)*)*'  # optional wrapper commands
+    r'(?:(?:nice|ionice)\s+(?:(?:-[^\s]+)(?:\s+[^\s-][^\s]*)?\s+)*)*'
     r'\s*'
 )
 _CMDPATH = r'/?(?:[a-z0-9_.+-]+/)*'
@@ -611,16 +612,71 @@ _HARDLINE_STORAGE_DESTROY_CANDIDATE_RE = re.compile(
     + r'(?P<args>[^\n;|&]*)',
     _RE_FLAGS,
 )
+_HARDLINE_RAW_DEVICE_COMMAND_RE = re.compile(
+    _CMDPOS + _CMDPATH + r'(?P<command>cp|sgdisk)\b(?P<args>[^\n;|&]*)',
+    _RE_FLAGS,
+)
 
 
 def _is_protected_find_path(path: str) -> bool:
     protected = {"/", "/home", "/root", "/etc", "/usr", "/var", "/bin", "/sbin", "/boot", "/lib"}
-    home_alias = path.rstrip("/")
-    if home_alias.lower() in {"~", "$home", "${home}"}:
-        return True
+    home = posixpath.normpath(os.path.expanduser("~"))
+    if home.startswith("/"):
+        current = home
+        while current != "/":
+            protected.add(current)
+            current = posixpath.dirname(current)
+    alias = re.fullmatch(r'(?:~|\$home|\$\{home\})(?P<suffix>/.*)?', path, re.IGNORECASE)
+    if alias:
+        path = home + (alias.group("suffix") or "")
     if not path.startswith("/"):
         return False
     return "/" + posixpath.normpath(path).lstrip("/") in protected
+
+
+def _has_destructive_raw_device_operation(command: str) -> bool:
+    """Detect raw-device cp/sgdisk operations independent of option order."""
+    for match in _HARDLINE_RAW_DEVICE_COMMAND_RE.finditer(command):
+        try:
+            tokens = shlex.split(match.group("args"), posix=True)
+        except ValueError:
+            continue
+        command_name = match.group("command").lower()
+        if command_name == "sgdisk":
+            destructive = any(
+                token in {"--zap-all", "-Z"}
+                for token in tokens
+            )
+            if destructive and any(
+                re.fullmatch(_HARDLINE_BLOCK_DEVICE, token, re.IGNORECASE)
+                for token in tokens
+            ):
+                return True
+            continue
+
+        operands: list[str] = []
+        skip_next = False
+        end_options = False
+        for token in tokens:
+            if skip_next:
+                skip_next = False
+                continue
+            if not end_options and token == "--":
+                end_options = True
+                continue
+            if not end_options and token.startswith("-"):
+                option = token.split("=", 1)[0]
+                if "=" not in token and option in {
+                    "-t", "--target-directory", "-S", "--suffix",
+                }:
+                    skip_next = True
+                continue
+            operands.append(token)
+        if len(operands) >= 2 and re.fullmatch(
+            _HARDLINE_BLOCK_DEVICE, operands[-1], re.IGNORECASE
+        ):
+            return True
+    return False
 
 
 def _has_lexically_protected_find_delete(command: str) -> bool:
@@ -816,6 +872,8 @@ def detect_hardline_command(command: str) -> tuple:
             return (True, "recursive find deletion of root/system/home")
         if _has_destructive_wipefs(variant_lower):
             return (True, "erase or discard an entire raw block device")
+        if _has_destructive_raw_device_operation(command_variant):
+            return (True, "write to or erase a raw block device")
         if _has_recursive_zfs_destroy(variant_lower):
             return (True, "destroy a ZFS or LVM storage layer")
         if _has_destructive_storage_layer_removal(variant_lower):

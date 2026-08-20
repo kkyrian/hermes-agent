@@ -1604,9 +1604,11 @@ def _load_skill_prompt_exposure_policy() -> tuple[dict, tuple]:
     try:
         from hermes_cli.config import load_config_readonly
 
-        raw = ((load_config_readonly().get("skills") or {}).get("prompt_exposure") or {})
+        raw_config = load_config_readonly()
+        raw = ((raw_config.get("skills") or {}).get("prompt_exposure") or {})
     except Exception:
         logger.debug("Could not load skills.prompt_exposure", exc_info=True)
+        raw_config = {}
         raw = {}
     if not isinstance(raw, dict):
         raw = {}
@@ -1666,7 +1668,16 @@ def _load_skill_prompt_exposure_policy() -> tuple[dict, tuple]:
                 "requires_executables": sorted({str(x).strip() for x in executables if str(x).strip()}),
             }
 
-    policy = {"default": default, "tiers": tiers, "conditional": conditional}
+    terminal_backend = (raw_config.get("terminal") or {}).get("backend")
+    terminal_backend = str(
+        terminal_backend or os.environ.get("TERMINAL_ENV") or "local"
+    ).strip().lower()
+    policy = {
+        "default": default,
+        "tiers": tiers,
+        "conditional": conditional,
+        "terminal_backend": terminal_backend,
+    }
     executable_state = tuple(
         sorted(
             (exe, bool(shutil.which(exe)))
@@ -1682,7 +1693,7 @@ def _load_skill_prompt_exposure_policy() -> tuple[dict, tuple]:
             for name, spec in sorted(conditional.items())
         ),
         executable_state,
-        (os.environ.get("TERMINAL_ENV") or "local").strip().lower(),
+        terminal_backend,
     )
     return policy, fingerprint
 
@@ -1701,7 +1712,7 @@ def _skill_prompt_exposure(
         # ``which`` describes the Hermes host, not a remote terminal backend.
         # Fail closed there rather than advertising a host binary the agent
         # cannot invoke inside Docker/SSH/Modal/etc.
-        terminal_env = (os.environ.get("TERMINAL_ENV") or "local").strip().lower()
+        terminal_env = str(policy.get("terminal_backend") or "local").strip().lower()
         if conditional["requires_executables"] and terminal_env in _REMOTE_TERMINAL_BACKENDS:
             return "hidden"
         if any(
