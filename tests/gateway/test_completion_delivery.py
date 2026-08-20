@@ -278,6 +278,44 @@ def test_later_turn_requeues_deferred_payload_before_ack(monkeypatch):
     assert acknowledgements == ["deleg_old_turn"]
 
 
+def test_failed_deferred_ack_does_not_queue_duplicate_fallback(monkeypatch):
+    from tools import async_delegation
+
+    runner = _runner(SimpleNamespace(handle_message=AsyncMock()))
+    runner._typed_internal_followups = {}
+    event = _async_event("deleg_retry_ack")
+    session_key = event["session_key"]
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="12345",
+        chat_type="dm",
+    )
+    monkeypatch.setattr(
+        async_delegation, "claim_completion_delivery", lambda *_args: True
+    )
+    monkeypatch.setattr(
+        async_delegation, "complete_completion_delivery", lambda *_args: False
+    )
+
+    async def _admit(_text, admitted_event):
+        admitted_event["_durable_delivery_deferred_session_key"] = session_key
+        admitted_event["_durable_delivery_deferred_generation"] = 3
+        admitted_event["_durable_delivery_source"] = source
+        return True
+
+    monkeypatch.setattr(runner, "_inject_watch_notification", _admit)
+    asyncio.run(runner._deliver_completion_notification("retry evidence", event))
+
+    for generation in (4, 5):
+        _settle_deferred_completion_deliveries(
+            runner, session_key, generation, {}, turn_completed=True
+        )
+
+    assert [
+        item.text for item in runner._typed_internal_followups[session_key]
+    ] == ["retry evidence"]
+
+
 def _persist_pending_completion(event):
     from tools import async_delegation
 
