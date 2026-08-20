@@ -615,6 +615,7 @@ def _has_lexically_protected_find_delete(command: str) -> bool:
 
 def _has_unquoted_raw_device_redirection(command: str) -> bool:
     """Recognize shell redirection to a block device, excluding quoted data."""
+    command = _strip_heredoc_bodies_for_detection(_strip_shell_comments(command))
     target_re = re.compile(
         rf'>{{1,2}}\s*(?P<quote>["\']?){_HARDLINE_BLOCK_DEVICE}'
         r'(?P=quote)(?=\s|$|[;|&)])',
@@ -643,6 +644,30 @@ def _has_unquoted_raw_device_redirection(command: str) -> bool:
             return True
         index += 1
     return False
+
+
+def _strip_heredoc_bodies_for_detection(command: str) -> str:
+    """Blank heredoc data while retaining the command line that introduced it."""
+    output = []
+    pending: list[tuple[str, bool]] = []
+    active: tuple[str, bool] | None = None
+    heredoc_re = re.compile(r"<<(?P<tabs>-)?\s*(?P<quote>['\"]?)(?P<word>[A-Za-z0-9_]+)(?P=quote)")
+    for line in command.splitlines(keepends=True):
+        if active is not None:
+            delimiter, strip_tabs = active
+            candidate = line.rstrip("\r\n")
+            if strip_tabs:
+                candidate = candidate.lstrip("\t")
+            output.append("\n" if line.endswith(("\n", "\r")) else "")
+            if candidate == delimiter:
+                active = pending.pop(0) if pending else None
+            continue
+        output.append(line)
+        for match in heredoc_re.finditer(line):
+            pending.append((match.group("word"), bool(match.group("tabs"))))
+        if pending:
+            active = pending.pop(0)
+    return "".join(output)
 
 
 # =========================================================================
