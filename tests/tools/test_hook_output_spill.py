@@ -143,6 +143,42 @@ class SpillIfOversizedTests(unittest.TestCase):
         self.assertTrue(result["ok"])
         self.assertEqual(Path(result["path"]).read_bytes(), b"abc")
 
+    def test_generic_spill_rejects_symlinked_session_directory(self):
+        directory = Path(self.tmpdir) / "generic-safe"
+        external = Path(self.tmpdir) / "generic-external"
+        directory.mkdir()
+        external.mkdir()
+        (directory / "shared").symlink_to(external, target_is_directory=True)
+
+        result = hos.write_spill_file(
+            "secret",
+            session_id="shared",
+            directory_override=str(directory),
+        )
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(list(external.iterdir()), [])
+
+    def test_portable_profile_local_spill_preserves_exact_bytes(self):
+        profile = Path(self.tmpdir) / "profile-portable"
+        profile.mkdir()
+        token = set_hermes_home_override(profile)
+        try:
+            with patch.object(hos, "_supports_secure_dir_fd", return_value=False):
+                result = hos.write_spill_file(
+                    "portable payload",
+                    session_id="shared",
+                    namespace="context-delta/deliveries",
+                    profile_local=True,
+                )
+        finally:
+            reset_hermes_home_override(token)
+
+        self.assertTrue(result["ok"])
+        saved = Path(result["path"])
+        self.assertEqual(saved.read_text(encoding="utf-8"), "portable payload")
+        self.assertTrue(saved.is_relative_to(profile))
+
     def test_profile_local_spill_cleans_plaintext_temp_on_interrupt(self):
         profile = Path(self.tmpdir) / "profile-interrupt"
         profile.mkdir()

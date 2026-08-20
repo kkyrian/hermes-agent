@@ -210,6 +210,20 @@ def test_returns_turn_context_with_user_message_appended():
     assert ctx.active_system_prompt == "SYSTEM"
 
 
+def test_no_pre_llm_consumer_skips_model_visible_prompt_rendering():
+    agent = _FakeAgent()
+    with (
+        patch("hermes_cli.lifecycle.has_hook", return_value=False),
+        patch(
+            "agent.system_prompt.render_model_visible_context_blocks"
+        ) as render_blocks,
+    ):
+        ctx = _build(agent)
+
+    render_blocks.assert_not_called()
+    assert ctx.plugin_user_context == ""
+
+
 def test_user_message_preserves_platform_event_timestamp():
     agent = _FakeAgent()
 

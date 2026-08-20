@@ -12823,7 +12823,64 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                     )
             if not admitted:
                 self._pending_input.put(synthetic_message)
-            complete_event_delivery(event, claim)
+                complete_event_delivery(event, claim)
+            else:
+                pending_claims = getattr(
+                    self, "_admitted_process_notification_claims", None
+                )
+                if not isinstance(pending_claims, list):
+                    pending_claims = []
+                    self._admitted_process_notification_claims = pending_claims
+                pending_claims.append((event, claim, synthetic_message))
+
+    def _settle_admitted_process_notifications(self, result: object) -> None:
+        """Acknowledge admitted completions only after consumption or requeue.
+
+        Active-turn mailbox admission is not delivery by itself.  Once the
+        turn returns, a completion absent from ``pending_internal_events`` was
+        consumed at a model boundary.  A leftover is first placed on the CLI's
+        ordinary pending-input queue, matching idle-delivery durability, and
+        only then acknowledged.  If the turn did not return a result, release
+        every durable claim for retry instead of risking completion loss.
+        """
+        claims = getattr(self, "_admitted_process_notification_claims", None)
+        if not isinstance(claims, list) or not claims:
+            return
+        self._admitted_process_notification_claims = []
+        from tools.async_delegation import (
+            complete_event_delivery,
+            release_event_delivery,
+        )
+
+        if not isinstance(result, dict):
+            for event, claim, _message in claims:
+                try:
+                    release_event_delivery(event, claim)
+                except Exception:
+                    logging.debug(
+                        "could not release admitted CLI completion claim",
+                        exc_info=True,
+                    )
+            return
+
+        leftovers = result.get("pending_internal_events")
+        remaining = list(leftovers) if isinstance(leftovers, list) else []
+        for event, claim, message in claims:
+            if message in remaining:
+                remaining.remove(message)
+                self._pending_input.put(message)
+            try:
+                complete_event_delivery(event, claim)
+            except Exception:
+                logging.debug(
+                    "could not acknowledge admitted CLI completion",
+                    exc_info=True,
+                )
+        if isinstance(leftovers, list):
+            if remaining:
+                result["pending_internal_events"] = remaining
+            else:
+                result.pop("pending_internal_events", None)
 
     def _drain_interrupt_queue_to_pending_input(self) -> None:
         """Move stray messages from ``_interrupt_queue`` into ``_pending_input``.
@@ -16610,6 +16667,10 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 # but guard against edge cases.
                 agent_thread.join(timeout=30)
 
+            self._settle_admitted_process_notifications(
+                result if not agent_thread.is_alive() else None
+            )
+
             # Freeze per-prompt elapsed timer once the agent thread has
             # exited (or been abandoned as a daemon after interrupt).
             if self._prompt_start_time is not None:
@@ -16912,6 +16973,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             return response
             
         except Exception as e:
+            self._settle_admitted_process_notifications(None)
             print(f"Error: {e}")
             return None
         finally:
