@@ -5066,7 +5066,7 @@ class AIAgent:
         )
 
     @staticmethod
-    def _cap_delegate_task_calls(tool_calls: list) -> list:
+    def _cap_delegate_task_calls(tool_calls: list, depth: int | None = None) -> list:
         """Truncate excess delegate_task calls to max_concurrent_children.
 
         The delegate_tool caps the task list inside a single call, but the
@@ -5076,7 +5076,10 @@ class AIAgent:
         Returns the original list if no truncation was needed.
         """
         from tools.delegate_tool import _get_max_concurrent_children
-        max_children = _get_max_concurrent_children()
+        max_children = (
+            _get_max_concurrent_children()
+            if depth is None else _get_max_concurrent_children(depth)
+        )
         delegate_count = sum(1 for tc in tool_calls if tc.function.name == "delegate_task")
         if delegate_count <= max_children:
             return tool_calls

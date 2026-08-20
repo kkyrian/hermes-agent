@@ -10,6 +10,7 @@ from agent.conversation_loop import (
     _inject_pending_internal_events_pre_api,
     _inject_pending_steer_pre_api,
 )
+from agent.tool_executor import _persist_final_tool_result_batch
 
 
 def _bare_agent() -> _ra.AIAgent:
@@ -25,19 +26,30 @@ class _CapturingSessionDB:
         self.rows: list[dict] = []
 
     def append_messages_batch(self, session_id, messages, **kwargs):
-        self.rows.extend(
-            {
+        for message in messages:
+            row = {
                 "role": message.get("role"),
                 "content": message.get("content"),
                 "display_kind": message.get("display_kind"),
             }
-            for message in messages
-        )
+            if message.get("tool_call_id") is not None:
+                row["tool_call_id"] = message["tool_call_id"]
+            self.rows.append(row)
         start = len(self.rows) - len(messages) + 1
         return list(range(start, len(self.rows) + 1))
 
     def flush_token_counts(self) -> None:
         return None
+
+    def set_tool_result_content(self, session_id, tool_call_id, content):
+        del session_id
+        matches = [
+            row for row in self.rows if row.get("tool_call_id") == tool_call_id
+        ]
+        if len(matches) != 1:
+            return len(matches)
+        matches[0]["content"] = content
+        return 1
 
 
 def test_internal_event_mailbox_accepts_and_drains_once_in_order() -> None:
@@ -162,10 +174,10 @@ def test_tool_boundary_delivers_pending_internal_events_once() -> None:
 
     agent._apply_pending_internal_events_to_tool_results(messages, 1)
 
-    assert messages[-2]["content"] == "tool output"
-    assert messages[-1]["role"] == "user"
-    assert messages[-1]["display_kind"] == "hidden"
+    assert len(messages) == 2
+    assert messages[-1]["role"] == "tool"
     content = messages[-1]["content"]
+    assert content.startswith("tool output")
     assert content.index("event one") < content.index("event two")
     assert content.count("event one") == 1
     assert content.count("event two") == 1
@@ -190,15 +202,11 @@ def test_tool_boundary_internal_event_survives_durable_replay() -> None:
     assert agent.enqueue_internal_event("durable completion evidence")
 
     assert agent._apply_pending_internal_events_to_tool_results(messages, 1)
-    agent._flush_messages_to_session_db(messages, conversation_history=[])
+    _persist_final_tool_result_batch(agent, messages[-1:])
 
     rows = db.rows
-    assert rows[-2]["content"] == "tool output"
-    assert rows[-1] == {
-        "role": "user",
-        "content": "durable completion evidence",
-        "display_kind": "hidden",
-    }
+    assert rows[-1]["role"] == "tool"
+    assert rows[-1]["content"] == "tool output\n\ndurable completion evidence"
 
 
 def test_hidden_internal_context_is_provider_valid_after_tool_result() -> None:
@@ -240,7 +248,7 @@ def test_user_steer_remains_later_and_higher_authority_at_tool_boundary() -> Non
 
     content = messages[-1]["content"]
     assert content.index("subagent evidence") < content.index("user correction")
-    assert messages[-1]["display_kind"] == "hidden"
+    assert messages[-1]["role"] == "tool"
 
 
 def test_late_steer_after_internal_boundary_remains_later_and_durable() -> None:

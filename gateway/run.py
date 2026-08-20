@@ -3570,6 +3570,7 @@ def _defer_completion_delivery(
     identity: Optional[tuple[str, str, object]],
     generation: int,
     source: Any,
+    parent_session_id: str,
 ) -> None:
     """Retain a durable completion claim until the busy turn consumes it.
 
@@ -3586,16 +3587,60 @@ def _defer_completion_delivery(
         if not isinstance(pending, dict):
             pending = {}
             runner._deferred_completion_deliveries = pending
-        pending.setdefault(session_key, []).append({
+        record = {
             "text": synth_text,
             "delegation_id": delegation_id,
             "claim_id": claim_id,
             "identity": identity,
             "generation": generation,
             "source": source,
+            "parent_session_id": parent_session_id,
             "fallback_queued": False,
             "siblings": [],
-        })
+        }
+        pending.setdefault(session_key, []).append(record)
+    task = asyncio.create_task(
+        _renew_deferred_completion_claim(
+            runner, session_key, delegation_id, claim_id
+        )
+    )
+    record["renew_task"] = task
+    background = getattr(runner, "_background_tasks", None)
+    if isinstance(background, set):
+        background.add(task)
+        task.add_done_callback(background.discard)
+
+
+async def _renew_deferred_completion_claim(
+    runner: Any,
+    session_key: str,
+    delegation_id: str,
+    claim_id: str,
+) -> None:
+    from tools.async_delegation import renew_completion_delivery
+
+    while True:
+        await asyncio.sleep(120)
+        lock = getattr(runner, "_completion_delivery_lock", None)
+        if lock is None:
+            return
+        with lock:
+            records = getattr(runner, "_deferred_completion_deliveries", {}).get(
+                session_key, []
+            )
+            active = any(
+                record.get("delegation_id") == delegation_id
+                and record.get("claim_id") == claim_id
+                for record in records
+            )
+        if not active:
+            return
+        if not renew_completion_delivery(delegation_id, claim_id):
+            logger.warning(
+                "Lost durable completion claim while parent remained active: %s",
+                delegation_id,
+            )
+            return
 
 
 def _attach_deferred_completion_siblings(
@@ -3617,7 +3662,7 @@ def _attach_deferred_completion_siblings(
     return False
 
 
-def _settle_deferred_completion_deliveries(
+async def _settle_deferred_completion_deliveries(
     runner: Any,
     session_key: str,
     run_generation: int,
@@ -3648,6 +3693,31 @@ def _settle_deferred_completion_deliveries(
         matching_turn = record.get("generation") == run_generation
         exact_leftover = record.get("text") in leftovers
         if not matching_turn:
+            parent_session_id = str(record.get("parent_session_id") or "")
+            if parent_session_id:
+                verdict = await runner._classify_completion_target(parent_session_id)
+                if verdict == "terminal":
+                    from tools.async_delegation import drop_completion_delivery
+
+                    drop_completion_delivery(
+                        record["delegation_id"], record["claim_id"]
+                    )
+                    for sibling_evt, sibling_claim_id in record.get("siblings", []):
+                        drop_completion_delivery(
+                            str(sibling_evt.get("delegation_id") or ""),
+                            sibling_claim_id,
+                        )
+                    renew_task = record.get("renew_task")
+                    if renew_task is not None:
+                        renew_task.cancel()
+                    with lock:
+                        identity = record.get("identity")
+                        if identity is not None:
+                            runner._completion_deliveries_inflight.discard(identity)
+                    continue
+                if verdict == "retry":
+                    remaining.append(record)
+                    continue
             source = record.get("source")
             if source is None:
                 remaining.append(record)
@@ -3726,6 +3796,10 @@ def _settle_deferred_completion_deliveries(
                 record["delegation_id"] = ""
                 record["claim_id"] = ""
             remaining.append(record)
+        else:
+            renew_task = record.get("renew_task")
+            if renew_task is not None:
+                renew_task.cancel()
 
     with lock:
         pending = getattr(runner, "_deferred_completion_deliveries", {})
@@ -25695,6 +25769,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         evt.get("_durable_delivery_deferred_generation") or 0
                     ),
                     source=evt.get("_durable_delivery_source"),
+                    parent_session_id=str(evt.get("parent_session_id") or ""),
                 )
                 logger.info(
                     "Deferred durable async completion acknowledgement until "
@@ -29697,7 +29772,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     result,
                     source,
                 )
-                if _leftover_internal_event is not None:
+                if _leftover_internal_event is not None and (
+                    run_generation is None
+                    or self._is_session_run_current(session_key, run_generation)
+                ):
                     _queue_typed_internal_followup(
                         self, session_key, _leftover_internal_event
                     )
@@ -29712,7 +29790,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # safe to acknowledge.  Timeout/no-result paths intentionally keep
             # the claim pending for lease expiry and replay.
             if agent_holder[0] is not None:
-                _settle_deferred_completion_deliveries(
+                await _settle_deferred_completion_deliveries(
                     self,
                     session_key,
                     int(run_generation or 0),

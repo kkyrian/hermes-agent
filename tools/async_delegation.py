@@ -487,6 +487,19 @@ def claim_event_delivery(evt: Dict[str, Any], consumer: str) -> Optional[str]:
     return claim_id if claim_completion_delivery(delegation_id, claim_id) else None
 
 
+def renew_completion_delivery(delegation_id: str, claim_id: str) -> bool:
+    """Refresh a held completion claim while delivery is still in progress."""
+    now = time.time()
+    with _DB_LOCK, _transaction() as conn:
+        cur = conn.execute(
+            """UPDATE async_delegations SET delivery_claimed_at=?, updated_at=?
+               WHERE delegation_id=? AND delivery_state='pending'
+                 AND delivery_claim=?""",
+            (now, now, delegation_id, claim_id),
+        )
+        return cur.rowcount == 1
+
+
 def release_completion_delivery(delegation_id: str, claim_id: str) -> bool:
     """Release a failed delivery claim so another consumer may retry.
 

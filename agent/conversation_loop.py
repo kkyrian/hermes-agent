@@ -7280,7 +7280,8 @@ def run_conversation(
 
                 # ── Post-call guardrails ──────────────────────────
                 assistant_message.tool_calls = agent._cap_delegate_task_calls(
-                    assistant_message.tool_calls
+                    assistant_message.tool_calls,
+                    getattr(agent, "_delegate_depth", 0),
                 )
                 assistant_message.tool_calls = agent._deduplicate_tool_calls(
                     assistant_message.tool_calls

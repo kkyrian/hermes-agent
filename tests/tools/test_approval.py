@@ -678,6 +678,7 @@ class TestExpandedHardlineFloor:
         "command",
         (
             "wipefs -a /dev/sda",
+            "wipefs -a /dev/nvme0",
             "blkdiscard /dev/nvme0n1",
             "sgdisk --zap-all /dev/vda",
             "nvme format /dev/nvme0n1 --ses=1",

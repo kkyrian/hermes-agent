@@ -901,7 +901,7 @@ def _synthetic_user_row(content: str) -> bool:
     _synthetic_prefixes = (
         "[System:", "[CONTEXT", "[PRIOR CONTEXT", "[IMPORTANT: Background",
         "[Your active task list", "[Planning state preserved",
-        "[ASYNC DELEGATION", "[OUT-OF-BAND",
+        "[ASYNC DELEGATION", "[HERMES INTERNAL EVENT — SUBAGENT RESULT", "[OUT-OF-BAND",
         "Cronjob Response:",
     )
     return stripped.startswith(_synthetic_prefixes)
@@ -5243,6 +5243,8 @@ This compaction should PRIORITISE preserving all information related to the focu
             TODO_INJECTION_HEADER + "\n"
         ) or text.startswith(
             _LENGTH_CONTINUATION_DROPPED_TOOLS_PREFIX
+        ) or text.startswith(
+            "[HERMES INTERNAL EVENT — SUBAGENT RESULT"
         )
 
     @staticmethod

@@ -16,7 +16,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from gateway.config import Platform
-from gateway.run import GatewayRunner, _settle_deferred_completion_deliveries
+from gateway.run import (
+    GatewayRunner,
+    _renew_deferred_completion_claim,
+    _settle_deferred_completion_deliveries,
+)
 from gateway.session import SessionSource
 from tools.process_registry import ProcessRegistry, ProcessSession
 
@@ -227,9 +231,9 @@ def test_busy_mailbox_admission_defers_durable_ack_until_turn_settlement(
     assert event["_durable_delivery_deferred_session_key"] == session_key
     assert runner._completion_deliveries_inflight
 
-    _settle_deferred_completion_deliveries(
+    asyncio.run(_settle_deferred_completion_deliveries(
         runner, session_key, 7, {}, turn_completed=True
-    )
+    ))
 
     assert len(acknowledgements) == 1
     assert acknowledgements[0][0] == "deleg_busy_ack"
@@ -268,14 +272,88 @@ def test_later_turn_requeues_deferred_payload_before_ack(monkeypatch):
     monkeypatch.setattr(runner, "_inject_watch_notification", _admit)
     asyncio.run(runner._deliver_completion_notification("old evidence", event))
 
-    _settle_deferred_completion_deliveries(
+    asyncio.run(_settle_deferred_completion_deliveries(
         runner, session_key, 4, {}, turn_completed=True
-    )
+    ))
 
     queued = runner._typed_internal_followups[session_key]
     assert [item.text for item in queued] == ["old evidence"]
     assert queued[0].metadata["delivery"] == "deferred_generation_fallback"
     assert acknowledgements == ["deleg_old_turn"]
+
+
+def test_terminal_parent_drops_stale_deferred_payload_without_new_fallback(monkeypatch):
+    from tools import async_delegation
+
+    runner = _runner(SimpleNamespace(handle_message=AsyncMock()))
+    runner._typed_internal_followups = {}
+    runner._classify_completion_target = AsyncMock(return_value="terminal")
+    event = _async_event("deleg_terminal_parent")
+    event["parent_session_id"] = "session-before-new"
+    session_key = event["session_key"]
+    dropped = []
+    monkeypatch.setattr(
+        async_delegation, "claim_completion_delivery", lambda *_args: True
+    )
+    monkeypatch.setattr(
+        async_delegation,
+        "drop_completion_delivery",
+        lambda delegation_id, claim_id: dropped.append((delegation_id, claim_id)) or True,
+    )
+
+    async def _admit(_text, admitted_event):
+        admitted_event["_durable_delivery_deferred_session_key"] = session_key
+        admitted_event["_durable_delivery_deferred_generation"] = 3
+        admitted_event["_durable_delivery_source"] = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="12345",
+            chat_type="dm",
+        )
+        return True
+
+    monkeypatch.setattr(runner, "_inject_watch_notification", _admit)
+    asyncio.run(runner._deliver_completion_notification("stale evidence", event))
+    asyncio.run(
+        _settle_deferred_completion_deliveries(
+            runner, session_key, 4, {}, turn_completed=True
+        )
+    )
+
+    runner._classify_completion_target.assert_awaited_once_with("session-before-new")
+    assert dropped and dropped[0][0] == "deleg_terminal_parent"
+    assert runner._typed_internal_followups == {}
+
+
+def test_deferred_claim_renews_while_record_remains_active(monkeypatch):
+    from tools import async_delegation
+
+    runner = _runner(SimpleNamespace(handle_message=AsyncMock()))
+    session_key = "agent:main:telegram:dm:12345:678"
+    record = {"delegation_id": "deleg_renew", "claim_id": "claim-1"}
+    runner._deferred_completion_deliveries = {session_key: [record]}
+    renewals = []
+    monkeypatch.setattr(
+        async_delegation,
+        "renew_completion_delivery",
+        lambda delegation_id, claim_id: renewals.append((delegation_id, claim_id)) or True,
+    )
+
+    sleep_count = 0
+
+    async def _one_cycle(_delay):
+        nonlocal sleep_count
+        sleep_count += 1
+        if sleep_count == 2:
+            runner._deferred_completion_deliveries[session_key].clear()
+
+    monkeypatch.setattr(asyncio, "sleep", _one_cycle)
+    asyncio.run(
+        _renew_deferred_completion_claim(
+            runner, session_key, "deleg_renew", "claim-1"
+        )
+    )
+
+    assert renewals == [("deleg_renew", "claim-1")]
 
 
 def test_failed_deferred_ack_does_not_queue_duplicate_fallback(monkeypatch):
@@ -307,9 +385,9 @@ def test_failed_deferred_ack_does_not_queue_duplicate_fallback(monkeypatch):
     asyncio.run(runner._deliver_completion_notification("retry evidence", event))
 
     for generation in (4, 5):
-        _settle_deferred_completion_deliveries(
+        asyncio.run(_settle_deferred_completion_deliveries(
             runner, session_key, generation, {}, turn_completed=True
-        )
+        ))
 
     assert [
         item.text for item in runner._typed_internal_followups[session_key]
