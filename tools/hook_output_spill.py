@@ -152,9 +152,14 @@ def _spill_root_and_segments(
     """Return a trusted root plus untrusted path segments to traverse safely."""
     session_segment = _safe_segment(session_id or "no-session", "no-session")
     if directory_override and not profile_local:
+        # The configured base is trusted policy.  Resolve it first so ordinary
+        # platform aliases such as macOS /tmp -> /private/tmp do not trip
+        # O_NOFOLLOW.  Only the session descendants remain untrusted and are
+        # traversed component-by-component with symlink refusal below.
         destination = Path(os.path.expanduser(directory_override)).absolute()
-        root = Path(destination.anchor)
-        segments = list(destination.parts[1:])
+        destination.mkdir(mode=0o700, parents=True, exist_ok=True)
+        root = destination.resolve(strict=True)
+        segments = []
     else:
         from hermes_constants import get_hermes_home
 

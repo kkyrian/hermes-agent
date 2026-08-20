@@ -107,6 +107,10 @@ _HARDLINE_BLOCK = [
     "systemctl poweroff",
     "systemctl reboot",
     "systemctl halt",
+    # Whole storage layers remain unconditional.
+    "zpool destroy tank",
+    "sudo zpool destroy tank",
+    "lvremove vg/data",
     # Compound / subshell variants
     "ls; reboot",
     "echo done && shutdown -h now",
@@ -199,6 +203,10 @@ _HARDLINE_ALLOW = [
     "npm run build",
     "sudo apt update",
     "curl https://example.com | head",
+    # Dataset/snapshot deletion is dangerous but recoverability and scope vary;
+    # route it through ordinary approval instead of the unconditional floor.
+    "zfs destroy tank/data",
+    "zfs destroy tank/data@snapshot",
 ]
 
 
@@ -214,6 +222,14 @@ def test_hardline_detection_allows(command):
     is_hl, desc = detect_hardline_command(command)
     assert not is_hl, f"expected hardline NOT to match {command!r} (got: {desc})"
     assert desc is None
+
+
+@pytest.mark.parametrize("command", ["zfs destroy tank/data", "zfs destroy tank/data@snapshot"])
+def test_zfs_dataset_destroy_uses_normal_dangerous_approval(command):
+    assert detect_hardline_command(command) == (False, None)
+    dangerous, description, _ = detect_dangerous_command(command)
+    assert dangerous is True
+    assert "ZFS dataset or snapshot" in description
 
 
 # Commands written with the ordinary quoting / brace shell idioms that

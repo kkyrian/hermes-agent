@@ -560,7 +560,10 @@ HARDLINE_PATTERNS = [
     # Non-rm spellings of the same unrecoverable recursive deletion floor.
     (_CMDPOS + r'find\s+' + _HARDLINE_FIND_LEADING_OPTIONS + _HARDLINE_FIND_PATH + r'[^\n]*-delete\b', "recursive find deletion of root/system/home"),
     # Whole storage-pool / volume destruction has no ordinary recovery path.
-    (_CMDPOS + r'(?:(?:zpool|zfs)\s+destroy|(?:lvremove|vgremove|pvremove))\b', "destroy a ZFS or LVM storage layer"),
+    # ``zfs destroy`` targets datasets or snapshots and belongs in the normal
+    # dangerous-command approval tier below; ``zpool destroy`` removes the
+    # complete storage pool and remains unconditional.
+    (_CMDPOS + r'(?:zpool\s+destroy|(?:lvremove|vgremove|pvremove))\b', "destroy a ZFS or LVM storage layer"),
     # Fork bomb (classic shell form)
     (r':\(\)\s*\{\s*:\s*\|\s*:\s*&\s*\}\s*;\s*:', "fork bomb"),
     # Kill every process on the system
@@ -882,6 +885,7 @@ def _sudo_stdin_block_result(description: str) -> dict:
 # =========================================================================
 
 DANGEROUS_PATTERNS = [
+    (r'\bzfs\s+destroy\b', "destroy ZFS dataset or snapshot"),
     (r'\brm\s+(-[^\s]*\s+)*/', "delete in root path"),
     (r'\brm\s+-[^\s]*r', "recursive delete"),
     (r'\brm\s+--recursive\b', "recursive delete (long flag)"),

@@ -3518,6 +3518,11 @@ def _pending_internal_event_from_result(
     )
 
 
+def _queued_followup_was_interrupted(result: Optional[Dict[str, Any]]) -> bool:
+    """Only an explicit terminal interrupt suppresses first-response delivery."""
+    return bool((result or {}).get("interrupted"))
+
+
 def _merge_agent_undelivered_internal_events(
     result: Optional[Dict[str, Any]],
     agent: Any,
@@ -29914,20 +29919,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         adapter.queue_message(session_key, pending)
                     return result or {"final_response": response, "messages": history}
 
-                was_interrupted = (result or {}).get("interrupted") or bool(
-                    pending_event
-                    and getattr(pending_event, "internal", False)
-                    and (
-                        (getattr(pending_event, "metadata", None) or {}).get(
-                            "internal_event_kind"
-                        )
-                        == "subagent_completion"
-                        or (getattr(pending_event, "metadata", None) or {}).get(
-                            "delivery"
-                        )
-                        == "turn_finalize_fallback"
-                    )
-                )
+                # A queued internal completion is a follow-up, not evidence
+                # that the completed turn was interrupted.  Only the agent's
+                # terminal result may suppress delivery of its first response.
+                was_interrupted = _queued_followup_was_interrupted(result)
                 if not was_interrupted:
                     # Queued message after normal completion — deliver the first
                     # response before processing the queued follow-up.
