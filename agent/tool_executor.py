@@ -408,24 +408,6 @@ def _rebudget_tool_bases_preserving_suffixes(
     for message, base, suffix in zip(tool_messages, base_contents, suffixes):
         message["content"] = base if suffix is not None else ""
     enforce_turn_budget(tool_messages, env=env, config=base_budget)
-    base_overflow = (
-        sum(
-            len(message.get("content", ""))
-            for message, suffix in zip(tool_messages, suffixes)
-            if suffix is not None
-        )
-        - base_budget.turn_budget
-    )
-    if base_overflow > 0:
-        for message, suffix in reversed(list(zip(tool_messages, suffixes))):
-            if base_overflow <= 0:
-                break
-            if suffix is None:
-                continue
-            content = message.get("content", "")
-            trim = min(len(content), base_overflow)
-            message["content"] = content[: len(content) - trim]
-            base_overflow -= trim
     for message, suffix, original in zip(tool_messages, suffixes, original_contents):
         if suffix is None:
             message["content"] = original

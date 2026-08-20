@@ -193,7 +193,9 @@ def test_hook_suffixes_spill_or_truncate_before_small_turn_budget(tmp_path):
     assert "INTERNAL-EVIDENCE" in content
     assert "STEER-GUIDANCE" in content
     assert content.index("INTERNAL-EVIDENCE") < content.index("STEER-GUIDANCE")
-    assert len(content) <= 120
+    assert "z" * 1_000 not in content
+    assert "Post-tool context" in content
+    assert len(content) < 500
 
 
 def test_post_tool_context_appends_to_multimodal_result(tmp_path):
