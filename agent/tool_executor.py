@@ -284,7 +284,6 @@ def _finalize_tool_boundary(
     effective_task_id: str,
     api_call_count: int,
     budget: BudgetConfig,
-    stage: str,
 ) -> None:
     """Finalize one provider-visible tool boundary in authority order."""
     if not tool_messages:
@@ -320,7 +319,6 @@ def _finalize_tool_boundary(
         budget=budget,
     )
     _persist_final_tool_result_batch(agent, tool_messages)
-    _flush_session_db_after_tool_progress(agent, messages, stage=stage)
 
 
 def _rebudget_tool_bases_preserving_suffixes(
@@ -1410,7 +1408,6 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                 effective_task_id=effective_task_id,
                 api_call_count=api_call_count,
                 budget=_tool_budget,
-                stage="finalized cancelled concurrent tool batch",
             )
         return
 
@@ -2191,7 +2188,6 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
             effective_task_id=effective_task_id,
             api_call_count=api_call_count,
             budget=_tool_budget,
-            stage="finalized concurrent tool batch",
         )
 
 
@@ -2272,7 +2268,6 @@ def _finalize_keyboard_interrupt_batch(
         effective_task_id=effective_task_id,
         api_call_count=api_call_count,
         budget=_budget_for_agent(agent),
-        stage="finalized keyboard-interrupt tool batch",
     )
 
 
@@ -3182,7 +3177,6 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
             effective_task_id=effective_task_id,
             api_call_count=api_call_count,
             budget=_tool_budget,
-            stage="finalized sequential tool batch",
         )
 
 
@@ -3245,7 +3239,6 @@ def execute_tool_calls_segmented(agent, assistant_message, messages: list, effec
                     effective_task_id=effective_task_id,
                     api_call_count=api_call_count,
                     budget=_budget_for_agent(agent),
-                    stage="finalized completed segmented tool batch",
                 )
             later_calls = [
                 call
@@ -3287,7 +3280,6 @@ def execute_tool_calls_segmented(agent, assistant_message, messages: list, effec
             effective_task_id=effective_task_id,
             api_call_count=api_call_count,
             budget=_tool_budget,
-            stage="finalized segmented tool batch",
         )
 
 

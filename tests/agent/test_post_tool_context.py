@@ -148,7 +148,6 @@ def test_post_tool_context_is_rebounded_before_final_persistence(tmp_path):
             effective_task_id="task-rebudget",
             api_call_count=1,
             budget=BudgetConfig(turn_budget=50_000, preview_size=1_000),
-            stage="test post-hook rebudget",
         )
 
     assert sum(len(message["content"]) for message in messages) < 60_000
