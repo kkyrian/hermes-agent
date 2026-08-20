@@ -117,6 +117,11 @@ _HARDLINE_BLOCK = [
     "/sbin/mkfs.ext4 /dev/sda",
     "cat <<<EOF\necho x > /dev/sda",
     "bash -c 'echo x > /dev/sda'",
+    "nice wipefs -a /dev/sda",
+    "ionice -c 3 zpool destroy tank",
+    "find \"$HOME/..\" -depth -delete",
+    "cp image.raw /dev/sda -f",
+    "sgdisk /dev/sda --zap-all",
     # Compound / subshell variants
     "ls; reboot",
     "echo done && shutdown -h now",

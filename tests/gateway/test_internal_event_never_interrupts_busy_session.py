@@ -125,13 +125,32 @@ async def test_internal_event_does_not_interrupt_busy_session() -> None:
 
     handled = await runner._handle_active_session_busy_message(event, sk)
 
-    # Returns False so the base adapter silently queues the internal event
-    # as a cascading next turn — it must NOT be handled-with-interrupt here.
-    assert handled is False
+    assert handled is True
+    assert adapter._pending_messages[sk] is event
     # The active turn must survive.
     parent.interrupt.assert_not_called()
     # No "⚡ Interrupting current task" (or any) ack for a synthetic event.
     adapter._send_with_retry.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_generic_internal_event_stays_separate_from_queued_user_text() -> None:
+    runner = _make_runner()
+    runner._busy_input_mode = "interrupt"
+    adapter = _make_adapter()
+    internal = _make_internal_event("terminal completion")
+    user = _make_internal_event("owner follow-up")
+    user.internal = False
+    sk = build_session_key(internal.source)
+    adapter._pending_messages[sk] = user
+    parent = _make_running_parent()
+    runner._running_agents[sk] = parent
+    runner.adapters[internal.source.platform] = adapter
+
+    assert await runner._handle_active_session_busy_message(internal, sk) is True
+    assert adapter._pending_messages[sk] is user
+    assert adapter._pending_messages[sk].text == "owner follow-up"
+    assert runner._queued_events[sk] == [internal]
 
 
 @pytest.mark.asyncio

@@ -10762,7 +10762,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     session_key,
                 )
                 return True
-            return False
+            self._queue_or_replace_pending_event(session_key, event)
+            logger.info(
+                "Queued generic internal event for separate idle follow-up: session=%s",
+                session_key,
+            )
+            return True
 
         busy_text_mode = self._effective_busy_text_mode(event.source)
         if (

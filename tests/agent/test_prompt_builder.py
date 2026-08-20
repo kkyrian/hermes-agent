@@ -1075,6 +1075,33 @@ class TestSkillPromptExposure:
             available_toolsets={"terminal"}
         )
 
+    def test_conditional_executable_uses_profile_terminal_backend(
+        self, monkeypatch, tmp_path
+    ):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("TERMINAL_ENV", "docker")
+        self._write_skill(tmp_path, "opencode", "Delegate to OpenCode")
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config_readonly",
+            lambda: {
+                "terminal": {"backend": "local"},
+                "skills": {"prompt_exposure": {"conditional": {
+                    "opencode": {
+                        "tier": "description",
+                        "requires_toolsets": ["terminal"],
+                        "requires_executables": ["opencode"],
+                    }
+                }}},
+            },
+        )
+        monkeypatch.setattr(
+            "agent.prompt_builder.shutil.which", lambda _name: "/bin/opencode"
+        )
+
+        assert "opencode: Delegate to OpenCode" in build_skills_system_prompt(
+            available_toolsets={"terminal"}
+        )
+
     def test_policy_is_part_of_prompt_cache_key(self, monkeypatch, tmp_path):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         self._write_skill(tmp_path, "cached-skill", "Cached description")
