@@ -547,46 +547,25 @@ def _inject_pending_internal_events_before_stop(
     messages: list,
     final_msg: dict,
 ) -> bool:
-    """Turn pending subagent completions into one same-turn model boundary."""
+    """Defer final-boundary completions to the typed internal follow-up path."""
     events = agent._take_internal_events_at_boundary(close_if_empty=True)
     if not events:
         return False
-
-    payload = "\n\n".join(events)
-    steer = agent._drain_pending_steer()
-    if steer:
-        from agent.prompt_builder import format_steer_marker
-
-        payload += format_steer_marker(steer)
-
-    final_msg["finish_reason"] = "internal_event_followup"
-    final_msg["_internal_event_followup"] = True
-    final_msg["display_kind"] = "hidden"
-    messages.append(final_msg)
-    messages.append(
-        {
-            "role": "user",
-            "content": payload,
-            "_internal_event_synthetic": True,
-            "display_kind": "hidden",
-        }
-    )
-    agent._session_messages = messages
-    # Give the completion evidence one model decision if the attempted stop
-    # consumed the ordinary turn budget. Otherwise the normal next iteration
-    # accounts for the follow-up.
-    _iteration_budget = getattr(agent, "iteration_budget", None)
-    _budget_exhausted = (
-        getattr(agent, "_api_call_count", 0) >= getattr(agent, "max_iterations", 0)
-        or getattr(_iteration_budget, "remaining", 1) <= 0
-    )
-    if _budget_exhausted:
-        agent._budget_grace_call = True
+    _requeue_pending_internal_events(agent, events)
     logger.info(
-        "Queued %d subagent completion event(s) at the active-turn final boundary",
+        "Deferred %d final-boundary subagent completion event(s) to typed follow-up",
         len(events),
     )
-    return True
+    return False
+
+
+def _requeue_pending_internal_events(agent, events: list[str]) -> None:
+    """Restore drained events without changing their runtime-internal authority."""
+    lock = getattr(agent, "_pending_internal_events_lock", None)
+    pending = getattr(agent, "_pending_internal_events", None)
+    if lock is not None and isinstance(pending, list):
+        with lock:
+            pending[:0] = events
 
 
 def _close_stream_before_internal_followup(agent, final_response: str) -> None:
@@ -608,18 +587,8 @@ def _inject_pending_internal_events_pre_api(agent, messages: list) -> bool:
         return False
 
     target = messages[-1] if messages and isinstance(messages[-1], dict) else None
-    if not (
-        target
-        and (
-            target.get("role") == "tool"
-            or target.get("_internal_event_synthetic")
-        )
-    ):
-        lock = getattr(agent, "_pending_internal_events_lock", None)
-        pending = getattr(agent, "_pending_internal_events", None)
-        if lock is not None and isinstance(pending, list):
-            with lock:
-                pending[:0] = events
+    if not target or target.get("role") != "tool":
+        _requeue_pending_internal_events(agent, events)
         return False
 
     payload = "\n\n".join(events)
@@ -628,25 +597,14 @@ def _inject_pending_internal_events_pre_api(agent, messages: list) -> bool:
         from agent.prompt_builder import format_steer_marker
 
         payload += format_steer_marker(steer)
-    if target.get("_internal_event_synthetic"):
-        messages.append(
-            {
-                "role": "assistant",
-                "content": (
-                    "[HERMES INTERNAL CONTEXT CONTINUATION — NOT USER INPUT]"
-                ),
-                "_internal_event_synthetic": True,
-                "display_kind": "hidden",
-            }
-        )
-    messages.append(
-        {
-            "role": "user",
-            "content": payload,
-            "_internal_event_synthetic": True,
-            "display_kind": "hidden",
-        }
-    )
+    marker = "\n\n" + payload
+    content = target.get("content", "")
+    if isinstance(content, str):
+        target["content"] = content + marker
+    else:
+        blocks = list(content) if isinstance(content, list) else []
+        blocks.append({"type": "text", "text": marker.lstrip()})
+        target["content"] = blocks
 
     agent._session_messages = messages
     logger.info(

@@ -733,6 +733,8 @@ class TestExpandedHardlineFloor:
             "printf '%s' 'wipefs -a /dev/sda'",
             'echo "> /dev/sda"',
             "printf '%s' '> /dev/sda'",
+            "echo ok # > /dev/sda",
+            "cat <<'EOF'\n> /dev/sda\nEOF",
             "find /tmp/work -delete",
             "find /home/alice/project/build -delete",
         ),

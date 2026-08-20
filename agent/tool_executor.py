@@ -330,7 +330,7 @@ def _rebudget_tool_bases_preserving_suffixes(
     budget: BudgetConfig,
 ) -> None:
     """Rebudget base output while preserving internal/steer/hook suffix order."""
-    suffixes: list[tuple[str, str] | None] = []
+    suffixes: list[dict | None] = []
     authority_size = 0
     original_contents = [message.get("content", "") for message in tool_messages]
     for base, authority, final in zip(
@@ -345,8 +345,23 @@ def _rebudget_tool_bases_preserving_suffixes(
         ):
             authority_suffix = authority[len(base):]
             hook_suffix = final[len(authority):]
-            suffixes.append((authority_suffix, hook_suffix))
+            suffixes.append(
+                {"kind": "text", "authority": authority_suffix, "hook": hook_suffix}
+            )
             authority_size += len(authority_suffix)
+        elif (
+            isinstance(base, list)
+            and isinstance(authority, list)
+            and isinstance(final, list)
+            and authority[: len(base)] == base
+            and final[: len(authority)] == authority
+        ):
+            authority_suffix = authority[len(base):]
+            hook_suffix = final[len(authority):]
+            suffixes.append(
+                {"kind": "blocks", "authority": authority_suffix, "hook": hook_suffix}
+            )
+            authority_size += len(_multimodal_text_summary(authority_suffix))
         else:
             suffixes.append(None)
             authority_size += len(_multimodal_text_summary(final))
@@ -354,14 +369,18 @@ def _rebudget_tool_bases_preserving_suffixes(
     hook_messages = []
     hook_indexes = []
     for index, (message, suffix) in enumerate(zip(tool_messages, suffixes)):
-        if suffix is None or not suffix[1]:
+        if suffix is None or not suffix["hook"]:
             continue
         hook_indexes.append(index)
         hook_messages.append(
             {
                 "role": "tool",
                 "tool_call_id": message.get("tool_call_id", f"hook_{index}"),
-                "content": suffix[1],
+                "content": (
+                    suffix["hook"]
+                    if suffix["kind"] == "text"
+                    else _multimodal_text_summary(suffix["hook"])
+                ),
             }
         )
     hook_budget = max(0, budget.turn_budget - authority_size)
@@ -394,10 +413,22 @@ def _rebudget_tool_bases_preserving_suffixes(
                 overflow -= len(content) - len(replacement)
                 item["content"] = replacement
         for index, item in zip(hook_indexes, hook_messages):
-            authority_suffix, _hook_suffix = suffixes[index]
-            suffixes[index] = (authority_suffix, item["content"])
+            suffix = suffixes[index]
+            suffix["hook"] = (
+                item["content"]
+                if suffix["kind"] == "text"
+                else ([{"type": "text", "text": item["content"]}] if item["content"] else [])
+            )
 
-    hook_size = sum(len(suffix[1]) for suffix in suffixes if suffix is not None)
+    hook_size = sum(
+        len(
+            suffix["hook"]
+            if suffix["kind"] == "text"
+            else _multimodal_text_summary(suffix["hook"])
+        )
+        for suffix in suffixes
+        if suffix is not None
+    )
 
     base_budget = BudgetConfig(
         default_result_size=budget.default_result_size,
@@ -412,8 +443,14 @@ def _rebudget_tool_bases_preserving_suffixes(
         if suffix is None:
             message["content"] = original
             continue
-        authority_suffix, hook_suffix = suffix
-        message["content"] = message.get("content", "") + authority_suffix + hook_suffix
+        if suffix["kind"] == "text":
+            message["content"] = (
+                message.get("content", "") + suffix["authority"] + suffix["hook"]
+            )
+        else:
+            content = message.get("content", [])
+            blocks = list(content) if isinstance(content, list) else []
+            message["content"] = blocks + suffix["authority"] + suffix["hook"]
 
 # Maximum number of concurrent worker threads for parallel tool execution.
 # Mirrors the constant in ``run_agent`` for tests/imports that look here.

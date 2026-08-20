@@ -3597,6 +3597,8 @@ def _defer_completion_delivery(
             "parent_session_id": parent_session_id,
             "fallback_queued": False,
             "siblings": [],
+            "renewal_delegation_id": delegation_id,
+            "renewal_claim_id": claim_id,
         }
         pending.setdefault(session_key, []).append(record)
     task = asyncio.create_task(
@@ -3628,19 +3630,37 @@ async def _renew_deferred_completion_claim(
             records = getattr(runner, "_deferred_completion_deliveries", {}).get(
                 session_key, []
             )
-            active = any(
-                record.get("delegation_id") == delegation_id
-                and record.get("claim_id") == claim_id
-                for record in records
+            record = next(
+                (
+                    record
+                    for record in records
+                    if (
+                        record.get("renewal_delegation_id", record.get("delegation_id"))
+                        == delegation_id
+                        and record.get("renewal_claim_id", record.get("claim_id"))
+                        == claim_id
+                    )
+                ),
+                None,
             )
-        if not active:
+            claims = [] if record is None else [
+                (record.get("delegation_id"), record.get("claim_id")),
+                *[
+                    (str(event.get("delegation_id") or ""), sibling_claim)
+                    for event, sibling_claim in record.get("siblings", [])
+                ],
+            ]
+        if record is None:
             return
-        if not renew_completion_delivery(delegation_id, claim_id):
-            logger.warning(
-                "Lost durable completion claim while parent remained active: %s",
-                delegation_id,
-            )
-            return
+        for active_delegation_id, active_claim_id in claims:
+            if not active_delegation_id or not active_claim_id:
+                continue
+            if not renew_completion_delivery(active_delegation_id, active_claim_id):
+                logger.warning(
+                    "Lost durable completion claim while parent remained active: %s",
+                    active_delegation_id,
+                )
+                return
 
 
 def _attach_deferred_completion_siblings(

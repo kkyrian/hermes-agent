@@ -356,6 +356,44 @@ def test_deferred_claim_renews_while_record_remains_active(monkeypatch):
     assert renewals == [("deleg_renew", "claim-1")]
 
 
+def test_deferred_claim_renews_attached_siblings(monkeypatch):
+    from tools import async_delegation
+
+    runner = _runner(SimpleNamespace(handle_message=AsyncMock()))
+    session_key = "agent:main:telegram:dm:12345:678"
+    sibling = _async_event("deleg_sibling")
+    record = {
+        "delegation_id": "deleg_primary",
+        "claim_id": "claim-primary",
+        "renewal_delegation_id": "deleg_primary",
+        "renewal_claim_id": "claim-primary",
+        "siblings": [(sibling, "claim-sibling")],
+    }
+    runner._deferred_completion_deliveries = {session_key: [record]}
+    renewals = []
+    monkeypatch.setattr(
+        async_delegation,
+        "renew_completion_delivery",
+        lambda delegation_id, claim_id: renewals.append((delegation_id, claim_id)) or True,
+    )
+
+    async def _one_cycle(_delay):
+        if renewals:
+            runner._deferred_completion_deliveries[session_key].clear()
+
+    monkeypatch.setattr(asyncio, "sleep", _one_cycle)
+    asyncio.run(
+        _renew_deferred_completion_claim(
+            runner, session_key, "deleg_primary", "claim-primary"
+        )
+    )
+
+    assert renewals == [
+        ("deleg_primary", "claim-primary"),
+        ("deleg_sibling", "claim-sibling"),
+    ]
+
+
 def test_failed_deferred_ack_does_not_queue_duplicate_fallback(monkeypatch):
     from tools import async_delegation
 

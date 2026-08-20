@@ -304,24 +304,13 @@ def test_pre_api_boundary_merges_late_completion_into_internal_context() -> None
     agent._open_internal_event_mailbox()
     assert agent.enqueue_internal_event("second completion")
     messages = [
-        {"role": "assistant", "content": "premature final"},
-        {
-            "role": "user",
-            "content": "first completion",
-            "_internal_event_synthetic": True,
-        },
+        {"role": "assistant", "tool_calls": [{"id": "call-1"}]},
+        {"role": "tool", "tool_call_id": "call-1", "content": "first completion"},
     ]
 
     assert _inject_pending_internal_events_pre_api(agent, messages)
-    assert messages[-3]["content"] == "first completion"
-    assert messages[-2] == {
-        "role": "assistant",
-        "content": "[HERMES INTERNAL CONTEXT CONTINUATION — NOT USER INPUT]",
-        "_internal_event_synthetic": True,
-        "display_kind": "hidden",
-    }
-    assert messages[-1]["content"] == "second completion"
-    assert messages[-1]["display_kind"] == "hidden"
+    assert messages[-1]["role"] == "tool"
+    assert messages[-1]["content"] == "first completion\n\nsecond completion"
     assert agent._repair_message_sequence(messages) == 0
     assert agent._take_internal_events_at_boundary() == []
 
@@ -354,23 +343,11 @@ def test_final_boundary_continues_once_for_pending_internal_events() -> None:
     messages: list[dict] = [{"role": "user", "content": "work"}]
     final_msg = {"role": "assistant", "content": "premature final"}
 
-    assert _inject_pending_internal_events_before_stop(agent, messages, final_msg)
-    assert messages[-2]["role"] == "assistant"
-    assert messages[-2]["finish_reason"] == "internal_event_followup"
-    assert messages[-2]["display_kind"] == "hidden"
-    assert messages[-1]["role"] == "user"
-    assert messages[-1]["_internal_event_synthetic"] is True
-    assert messages[-1]["display_kind"] == "hidden"
-    assert "SUBAGENT RESULT" in messages[-1]["content"]
-    assert getattr(agent, "_budget_grace_call") is True
-
-    # A boundary that drains work stays open for another completion.
-    assert agent.enqueue_internal_event("second result") is True
-    assert _inject_pending_internal_events_before_stop(
-        agent,
-        messages,
-        {"role": "assistant", "content": "second premature final"},
-    )
+    assert not _inject_pending_internal_events_before_stop(agent, messages, final_msg)
+    assert messages == [{"role": "user", "content": "work"}]
+    assert agent._take_internal_events_at_boundary() == [
+        "[HERMES INTERNAL EVENT — SUBAGENT RESULT — NOT USER INPUT] result"
+    ]
 
     # The first empty final boundary closes admission atomically. A completion
     # arriving afterward must take the gateway's normal idle follow-up path.
@@ -382,7 +359,7 @@ def test_final_boundary_continues_once_for_pending_internal_events() -> None:
     assert agent.enqueue_internal_event("too late") is False
 
 
-def test_final_boundary_uses_normal_budget_when_available() -> None:
+def test_final_boundary_defers_even_when_budget_is_available() -> None:
     agent = _bare_agent()
     setattr(agent, "_budget_grace_call", False)
     setattr(agent, "_session_messages", [])
@@ -392,12 +369,13 @@ def test_final_boundary_uses_normal_budget_when_available() -> None:
     agent._open_internal_event_mailbox()
     assert agent.enqueue_internal_event("completion")
 
-    assert _inject_pending_internal_events_before_stop(
+    assert not _inject_pending_internal_events_before_stop(
         agent,
         [{"role": "user", "content": "work"}],
         {"role": "assistant", "content": "premature final"},
     )
     assert getattr(agent, "_budget_grace_call") is False
+    assert agent._take_internal_events_at_boundary() == ["completion"]
 
 
 def test_streamed_final_is_closed_before_internal_event_resampling() -> None:
@@ -413,7 +391,7 @@ def test_streamed_final_is_closed_before_internal_event_resampling() -> None:
     assert agent._stream_needs_break is True
 
 
-def test_final_boundary_internal_context_is_durable_but_display_hidden() -> None:
+def test_final_boundary_internal_context_is_returned_for_typed_followup() -> None:
     agent = _bare_agent()
     setattr(agent, "_budget_grace_call", False)
     setattr(agent, "_session_messages", [])
@@ -431,22 +409,18 @@ def test_final_boundary_internal_context_is_durable_but_display_hidden() -> None
     assert agent.enqueue_internal_event("final-race completion")
     messages = [{"role": "user", "content": "work"}]
 
-    assert _inject_pending_internal_events_before_stop(
+    assert not _inject_pending_internal_events_before_stop(
         agent,
         messages,
         {"role": "assistant", "content": "premature final"},
     )
-    agent._persist_session(messages, conversation_history=[])
+    result = agent._finalize_internal_event_mailbox({"final_response": "done"})
 
-    assert db.rows[-2]["display_kind"] == "hidden"
-    assert db.rows[-1] == {
-        "role": "user",
-        "content": "final-race completion",
-        "display_kind": "hidden",
-    }
+    assert result["pending_internal_events"] == ["final-race completion"]
+    assert db.rows == []
 
 
-def test_final_boundary_places_user_steer_after_internal_evidence() -> None:
+def test_final_boundary_leaves_user_steer_for_its_authoritative_path() -> None:
     agent = _bare_agent()
     setattr(agent, "_budget_grace_call", False)
     setattr(agent, "_session_messages", [])
@@ -459,12 +433,11 @@ def test_final_boundary_places_user_steer_after_internal_evidence() -> None:
     assert agent.enqueue_internal_event("subagent evidence")
 
     messages = [{"role": "user", "content": "work"}]
-    assert _inject_pending_internal_events_before_stop(
+    assert not _inject_pending_internal_events_before_stop(
         agent,
         messages,
         {"role": "assistant", "content": "premature final"},
     )
 
-    content = messages[-1]["content"]
-    assert content.index("subagent evidence") < content.index("owner correction")
-    assert agent._drain_pending_steer() is None
+    assert agent._take_internal_events_at_boundary() == ["subagent evidence"]
+    assert agent._drain_pending_steer() == "owner correction"

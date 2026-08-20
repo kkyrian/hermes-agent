@@ -251,6 +251,43 @@ def test_post_tool_context_appends_to_multimodal_result(tmp_path):
     db.close()
 
 
+def test_multimodal_hook_suffix_is_aggregate_budgeted(tmp_path):
+    agent = SimpleNamespace(
+        session_id=None,
+        _session_db=None,
+        _current_turn_id="turn-multimodal-budget",
+        _apply_pending_steer_to_tool_results=lambda *_args: None,
+    )
+    original = [
+        {"type": "text", "text": "screenshot"},
+        {"type": "image_url", "image_url": {"url": "data:image/png;base64,abc"}},
+    ]
+    messages = [
+        {"role": "tool", "tool_call_id": "call-image", "content": original}
+    ]
+    with (
+        patch("hermes_cli.lifecycle.has_hook", return_value=True),
+        patch(
+            "hermes_cli.lifecycle.invoke_hook",
+            return_value=[{"context": "MULTIMODAL-HOOK-" + "x" * 20_000}],
+        ),
+    ):
+        _finalize_tool_boundary(
+            agent,
+            messages,
+            messages,
+            [_tool_call("computer_use", "call-image")],
+            effective_task_id="task-multimodal-budget",
+            api_call_count=1,
+            budget=BudgetConfig(turn_budget=200, preview_size=40),
+        )
+
+    assert messages[0]["content"][:2] == original
+    hook_text = messages[0]["content"][-1]["text"]
+    assert "x" * 1_000 not in hook_text
+    assert len(hook_text) < 200
+
+
 def test_post_tool_context_spills_joined_aggregate_and_persists_preview(tmp_path):
     db = SessionDB(db_path=tmp_path / "state.db")
     db.create_session("aggregate", source="cli")
