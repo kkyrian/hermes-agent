@@ -918,6 +918,7 @@ def build_system_prompt(agent: Any, system_message: Optional[str] = None) -> str
     the change stays in the reused prefix.
     """
     parts = build_system_prompt_parts(agent, system_message=system_message)
+    agent._cached_system_prompt_parts = dict(parts)
     joined = "\n\n".join(p for p in (parts["stable"], parts["context"], parts["volatile"]) if p)
     agent._cached_system_prompt_static = parts["stable"]
 
@@ -939,6 +940,9 @@ def render_model_visible_context_blocks(
     system prompt remains byte-identical until Hermes's normal compaction or
     reset boundary.
     """
+    cached = getattr(agent, "_cached_system_prompt_parts", None)
+    if getattr(agent, "_cached_system_prompt", None) and isinstance(cached, dict):
+        return dict(cached)
     return build_system_prompt_parts(agent, system_message=system_message)
 
 
@@ -950,6 +954,7 @@ def invalidate_system_prompt(agent: Any) -> None:
     """
     agent._cached_system_prompt = None
     agent._cached_system_prompt_static = None
+    agent._cached_system_prompt_parts = None
     if agent._memory_store:
         agent._memory_store.load_from_disk()
 

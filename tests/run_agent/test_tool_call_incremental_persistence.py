@@ -562,6 +562,38 @@ def test_segmented_batch_stops_before_later_segment_after_persist_failure():
     assert getattr(agent, "_incremental_persistence_failed", False) is True
 
 
+def test_segmented_keyboard_interrupt_finalizes_one_whole_batch_budget():
+    agent = _make_agent()
+    calls = [_mock_tool_call(call_id=f"c{i}") for i in range(1, 4)]
+    assistant_message = SimpleNamespace(tool_calls=calls)
+    messages: list = []
+
+    with (
+        patch.object(agent, "_invoke_tool", return_value="first result"),
+        patch("run_agent.handle_function_call", side_effect=KeyboardInterrupt),
+        patch(
+            "agent.tool_executor.maybe_persist_tool_result",
+            side_effect=lambda **kwargs: kwargs["content"],
+        ),
+        patch("agent.tool_executor._finalize_tool_boundary") as finalize,
+        pytest.raises(KeyboardInterrupt),
+    ):
+        execute_tool_calls_segmented(
+            agent,
+            assistant_message,
+            messages,
+            "task-1",
+            segments=[
+                ("parallel", [calls[0]]),
+                ("sequential", [calls[1]]),
+                ("parallel", [calls[2]]),
+            ],
+        )
+
+    finalize.assert_called_once()
+    assert [m["tool_call_id"] for m in messages] == ["c1", "c2", "c3"]
+
+
 # ---------------------------------------------------------------------------
 # Contract 3: the CONCURRENT path flushes each collected tool result in append
 # order.  Dispatch goes through agent._invoke_tool (the real concurrent

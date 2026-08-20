@@ -713,7 +713,15 @@ def _has_destructive_wipefs(command: str) -> bool:
             continue
         if any(token in {"-n", "--no-act"} for token in tokens):
             continue
-        if not any(token == "--all" or (token.startswith("-") and "a" in token[1:]) for token in tokens):
+        if not any(
+            token == "--all"
+            or (
+                token.startswith("-")
+                and not token.startswith("--")
+                and "a" in token[1:]
+            )
+            for token in tokens
+        ):
             continue
         if any(re.fullmatch(_HARDLINE_BLOCK_DEVICE, token, re.IGNORECASE) for token in tokens):
             return True
@@ -772,6 +780,22 @@ def _has_unquoted_raw_device_redirection(command: str) -> bool:
     while index < len(command):
         char = command[index]
         if quote is not None:
+            if quote == '"' and command.startswith("$(", index):
+                end = _scan_dollar_paren_end(command, index)
+                if end is not None and _has_unquoted_raw_device_redirection(
+                    command[index + 2:end - 1]
+                ):
+                    return True
+                index = end if end is not None else index + 2
+                continue
+            if quote == '"' and char == "`":
+                end = _scan_backtick_end(command, index)
+                if end is not None and _has_unquoted_raw_device_redirection(
+                    command[index + 1:end - 1]
+                ):
+                    return True
+                index = end if end is not None else index + 1
+                continue
             if char == "\\" and quote == '"' and index + 1 < len(command):
                 index += 2
                 continue
