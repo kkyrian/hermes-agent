@@ -242,6 +242,60 @@ def test_busy_mailbox_admission_defers_durable_ack_until_turn_settlement(
     assert runner._completion_deliveries_delivered
 
 
+def test_harvested_leftover_keeps_durable_claim_until_recursive_consumption(
+    monkeypatch,
+):
+    from tools import async_delegation
+
+    runner = _runner(SimpleNamespace(handle_message=AsyncMock()))
+    event = _async_event("deleg_harvested")
+    session_key = event["session_key"]
+    acknowledgements = []
+    monkeypatch.setattr(
+        async_delegation, "claim_completion_delivery", lambda *_args: True
+    )
+    monkeypatch.setattr(
+        async_delegation,
+        "complete_completion_delivery",
+        lambda delegation_id, _claim_id: acknowledgements.append(delegation_id)
+        or True,
+    )
+
+    async def _admit(_text, admitted_event):
+        admitted_event["_durable_delivery_deferred_session_key"] = session_key
+        admitted_event["_durable_delivery_deferred_generation"] = 7
+        admitted_event["_durable_delivery_source"] = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="12345",
+            chat_type="dm",
+        )
+        return True
+
+    monkeypatch.setattr(runner, "_inject_watch_notification", _admit)
+    asyncio.run(runner._deliver_completion_notification("completion evidence", event))
+
+    asyncio.run(
+        _settle_deferred_completion_deliveries(
+            runner,
+            session_key,
+            7,
+            {"pending_internal_events": ["completion evidence"]},
+            turn_completed=True,
+        )
+    )
+    assert acknowledgements == []
+    assert runner._deferred_completion_deliveries[session_key][0][
+        "fallback_queued"
+    ]
+
+    asyncio.run(
+        _settle_deferred_completion_deliveries(
+            runner, session_key, 7, {}, turn_completed=True
+        )
+    )
+    assert acknowledgements == ["deleg_harvested"]
+
+
 def test_later_turn_requeues_deferred_payload_before_ack(monkeypatch):
     from tools import async_delegation
 

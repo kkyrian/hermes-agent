@@ -472,6 +472,7 @@ _CMDPOS = (
     r'(?:(?:exec|nohup|setsid|time)\s+|command\s+(?:-[^\s]+\s+)*)*'  # optional wrapper commands
     r'\s*'
 )
+_CMDPATH = r'/?(?:[a-z0-9_.+-]+/)*'
 
 # Destructive-path argument matcher for the rm hardline rules.
 #
@@ -511,7 +512,7 @@ _HARDLINE_SYSTEM_DIRS = (
 # the anchor. A real wipe at any command position (bare, chained, in $()/`…`,
 # under sudo) still matches; the quoted-path branch in _hardline_rm_path keeps
 # catching `rm -rf "/"`.
-_RM_FLAG_PREFIX = _CMDPOS + r'rm\s+(-[^\s]*\s+)*'
+_RM_FLAG_PREFIX = _CMDPOS + _CMDPATH + r'rm\s+(-[^\s]*\s+)*'
 
 _HARDLINE_BLOCK_DEVICE = (
     r'/dev/(?:sd[a-z][a-z0-9]*|hd[a-z][a-z0-9]*|vd[a-z][a-z0-9]*|'
@@ -550,15 +551,15 @@ HARDLINE_PATTERNS = [
     (_RM_FLAG_PREFIX + _hardline_rm_path(_HARDLINE_SYSTEM_DIRS), "recursive delete of system directory"),
     (_RM_FLAG_PREFIX + _hardline_rm_path(r'(?:~|\$\{?HOME\}?)(?:/?|/\*)?'), "recursive delete of home directory"),
     # Filesystem format
-    (_CMDPOS + r'mkfs(\.[a-z0-9]+)?\b', "format filesystem (mkfs)"),
+    (_CMDPOS + _CMDPATH + r'mkfs(\.[a-z0-9]+)?\b', "format filesystem (mkfs)"),
     # Raw block device overwrites (dd + redirection)
-    (_CMDPOS + r'dd\b[^\n]*\bof=/dev/(sd|nvme|hd|mmcblk|vd|xvd)[a-z0-9]*', "dd to raw block device"),
-    (_CMDPOS + rf'(?:blkdiscard|shred)\b[^\n]*["\']?{_HARDLINE_BLOCK_DEVICE}\b', "erase or discard an entire raw block device"),
-    (_CMDPOS + rf'sgdisk\b[^\n]*(?:--zap-all|-Z)\b[^\n]*["\']?{_HARDLINE_BLOCK_DEVICE}\b', "erase a raw block-device partition table"),
-    (_CMDPOS + rf'nvme\s+(?:format|sanitize)\b[^\n]*["\']?{_HARDLINE_BLOCK_DEVICE}\b', "destructive NVMe format/sanitize"),
-    (_CMDPOS + rf'(?:cp\b[^\n]*\s+["\']?{_HARDLINE_BLOCK_DEVICE}["\']?{_HARDLINE_POST_COMMAND_REDIRECTIONS}\s*(?:$|\n|[;|&)])|tee\b[^\n]*["\']?{_HARDLINE_BLOCK_DEVICE}\b)', "write to an entire raw block device"),
+    (_CMDPOS + _CMDPATH + r'dd\b[^\n]*\bof=/dev/(sd|nvme|hd|mmcblk|vd|xvd)[a-z0-9]*', "dd to raw block device"),
+    (_CMDPOS + _CMDPATH + rf'(?:blkdiscard|shred)\b[^\n]*["\']?{_HARDLINE_BLOCK_DEVICE}\b', "erase or discard an entire raw block device"),
+    (_CMDPOS + _CMDPATH + rf'sgdisk\b[^\n]*(?:--zap-all|-Z)\b[^\n]*["\']?{_HARDLINE_BLOCK_DEVICE}\b', "erase a raw block-device partition table"),
+    (_CMDPOS + _CMDPATH + rf'nvme\s+(?:format|sanitize)\b[^\n]*["\']?{_HARDLINE_BLOCK_DEVICE}\b', "destructive NVMe format/sanitize"),
+    (_CMDPOS + _CMDPATH + rf'(?:cp\b[^\n]*\s+["\']?{_HARDLINE_BLOCK_DEVICE}["\']?{_HARDLINE_POST_COMMAND_REDIRECTIONS}\s*(?:$|\n|[;|&)])|tee\b[^\n]*["\']?{_HARDLINE_BLOCK_DEVICE}\b)', "write to an entire raw block device"),
     # Non-rm spellings of the same unrecoverable recursive deletion floor.
-    (_CMDPOS + r'find\s+' + _HARDLINE_FIND_LEADING_OPTIONS + _HARDLINE_FIND_PATH + r'[^\n]*-delete\b', "recursive find deletion of root/system/home"),
+    (_CMDPOS + _CMDPATH + r'find\s+' + _HARDLINE_FIND_LEADING_OPTIONS + _HARDLINE_FIND_PATH + r'[^\n]*-delete\b', "recursive find deletion of root/system/home"),
     # Whole storage-pool / volume destruction has no ordinary recovery path.
     # A recursive ``zfs destroy`` removes an entire dataset subtree and stays
     # unconditional.  Narrow dataset/snapshot deletion belongs in the normal
@@ -592,18 +593,20 @@ HARDLINE_PATTERNS_COMPILED = [
 
 _HARDLINE_FIND_CANDIDATE_RE = re.compile(
     _CMDPOS
+    + _CMDPATH
     + r'find\s+'
     + r'(?P<args>[^\n;|&]*?)-delete\b',
     _RE_FLAGS,
 )
 _HARDLINE_WIPEFS_CANDIDATE_RE = re.compile(
-    _CMDPOS + r'wipefs\b(?P<args>[^\n;|&]*)', _RE_FLAGS
+    _CMDPOS + _CMDPATH + r'wipefs\b(?P<args>[^\n;|&]*)', _RE_FLAGS
 )
 _HARDLINE_ZFS_DESTROY_CANDIDATE_RE = re.compile(
-    _CMDPOS + r'zfs\s+destroy\b(?P<args>[^\n;|&]*)', _RE_FLAGS
+    _CMDPOS + _CMDPATH + r'zfs\s+destroy\b(?P<args>[^\n;|&]*)', _RE_FLAGS
 )
 _HARDLINE_STORAGE_DESTROY_CANDIDATE_RE = re.compile(
     _CMDPOS
+    + _CMDPATH
     + r'(?P<command>zpool\s+destroy|lvremove|vgremove|pvremove)\b'
     + r'(?P<args>[^\n;|&]*)',
     _RE_FLAGS,
@@ -738,7 +741,7 @@ def _strip_heredoc_bodies_for_detection(command: str) -> str:
     output = []
     pending: list[tuple[str, bool]] = []
     active: tuple[str, bool] | None = None
-    heredoc_re = re.compile(r"<<(?P<tabs>-)?\s*(?P<quote>['\"]?)(?P<word>[A-Za-z0-9_]+)(?P=quote)")
+    heredoc_re = re.compile(r"(?<!<)<<(?!<)(?P<tabs>-)?\s*(?P<quote>['\"]?)(?P<word>[A-Za-z0-9_]+)(?P=quote)")
     for line in command.splitlines(keepends=True):
         if active is not None:
             delimiter, strip_tabs = active

@@ -113,6 +113,9 @@ _HARDLINE_BLOCK = [
     "zfs destroy -r tank/data",
     "zfs destroy -Rf tank/data",
     "lvremove vg/data",
+    "/bin/dd if=/dev/zero of=/dev/sda",
+    "/sbin/mkfs.ext4 /dev/sda",
+    "cat <<<EOF\necho x > /dev/sda",
     # Compound / subshell variants
     "ls; reboot",
     "echo done && shutdown -h now",
