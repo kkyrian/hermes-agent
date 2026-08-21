@@ -1658,10 +1658,19 @@ def _load_skill_prompt_exposure_policy() -> tuple[dict, tuple]:
                 tier = "hidden"
             toolsets = spec.get("requires_toolsets") or []
             executables = spec.get("requires_executables") or []
+            invalid_requirements = False
             if isinstance(toolsets, str):
                 toolsets = [toolsets]
+            elif not isinstance(toolsets, (list, tuple, set)):
+                toolsets = []
+                invalid_requirements = True
             if isinstance(executables, str):
                 executables = [executables]
+            elif not isinstance(executables, (list, tuple, set)):
+                executables = []
+                invalid_requirements = True
+            if invalid_requirements:
+                tier = "hidden"
             conditional[name] = {
                 "tier": tier,
                 "requires_toolsets": sorted({str(x).strip() for x in toolsets if str(x).strip()}),

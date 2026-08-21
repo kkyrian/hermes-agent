@@ -12930,10 +12930,20 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                     "could not harvest failed-turn CLI completions",
                     exc_info=True,
                 )
+        turn_failed = bool(result.get("failed"))
         for event, claim, message in claims:
             if message in remaining:
                 remaining.remove(message)
                 self._pending_input.put(message)
+            elif turn_failed:
+                try:
+                    release_event_delivery(event, claim)
+                except Exception:
+                    logging.debug(
+                        "could not release failed-turn CLI completion claim",
+                        exc_info=True,
+                    )
+                continue
             try:
                 complete_event_delivery(event, claim)
             except Exception:

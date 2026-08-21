@@ -807,13 +807,22 @@ def _has_lexically_protected_find_delete(command: str) -> bool:
             "-gid", "-perm", "-size", "-type", "-xtype", "-links", "-inum",
             "-fstype", "-context", "-printf", "-fprint", "-fls",
         }
+        narrowing_predicates = one_arg_predicates - {"-printf", "-fprint", "-fls"}
+        zero_arg_narrowing = {"-empty", "-false"}
         has_delete_action = False
+        has_narrowing_predicate = False
+        has_broadening_operator = False
         while index < len(tokens):
             token = tokens[index]
             token_lower = token.lower()
             if token_lower == "-delete":
                 has_delete_action = True
-                break
+                index += 1
+                continue
+            if token_lower in {"-o", "-or", ",", "!", "-not"}:
+                has_broadening_operator = True
+            if token_lower in narrowing_predicates or token_lower in zero_arg_narrowing:
+                has_narrowing_predicate = True
             if token_lower in one_arg_predicates:
                 index += 2
                 continue
@@ -829,16 +838,20 @@ def _has_lexically_protected_find_delete(command: str) -> bool:
             continue
 
         for path in paths:
-            if _is_protected_find_path(path):
-                return True
+            direct_protected = _is_protected_find_path(path)
             glob_index = min(
                 (path.find(char) for char in "*?[{" if char in path),
                 default=-1,
             )
+            glob_protected = False
             if glob_index >= 0:
                 static_prefix = path[:glob_index].rstrip("/") or "/"
                 if _is_protected_find_path(static_prefix):
-                    return True
+                    glob_protected = True
+            if has_narrowing_predicate and not has_broadening_operator:
+                continue
+            if direct_protected or glob_protected:
+                return True
     return False
 
 
