@@ -1074,6 +1074,30 @@ class TestSkillPromptExposure:
 
         assert "malformed" not in prompt
 
+    @pytest.mark.parametrize(
+        "conditional",
+        (
+            ["malformed"],
+            {"malformed": "requires terminal"},
+        ),
+    )
+    def test_malformed_conditional_entries_hide_skill(
+        self, monkeypatch, tmp_path, conditional
+    ):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        self._write_skill(tmp_path, "malformed", "Malformed exposure")
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config_readonly",
+            lambda: {"skills": {"prompt_exposure": {
+                "default": "description",
+                "conditional": conditional,
+            }}},
+        )
+
+        assert "malformed" not in build_skills_system_prompt(
+            available_toolsets={"terminal"}
+        )
+
     def test_conditional_executable_fails_closed_for_remote_terminal(
         self, monkeypatch, tmp_path
     ):
