@@ -3644,24 +3644,47 @@ def _defer_completion_delivery(
     if lock is None:
         lock = threading.Lock()
         runner._completion_delivery_lock = lock
+    record = {
+        "text": synth_text,
+        "delegation_id": delegation_id,
+        "claim_id": claim_id,
+        "identity": identity,
+        "generation": generation,
+        "source": source,
+        "parent_session_id": parent_session_id,
+        "fallback_queued": False,
+        "siblings": [],
+        "renewal_delegation_id": delegation_id,
+        "renewal_claim_id": claim_id,
+    }
+    # A busy parent may reject mailbox admission and queue the exact typed
+    # fallback before the durable claim record exists. Bind that process-local
+    # event to this claim now, so only its completed recursive turn can retire
+    # the durable row. If it disappeared concurrently, settlement retains the
+    # claim and reconstructs a fallback instead of acknowledging early.
+    typed_lock = getattr(runner, "_typed_internal_followups_lock", None)
+    typed_queues = getattr(runner, "_typed_internal_followups", None)
+    if typed_lock is not None and isinstance(typed_queues, dict):
+        with typed_lock:
+            for queued_event in reversed(typed_queues.get(session_key, [])):
+                queued_metadata = getattr(queued_event, "metadata", None)
+                if (
+                    isinstance(queued_event, MessageEvent)
+                    and queued_event.text == synth_text
+                    and isinstance(queued_metadata, dict)
+                    and str(queued_metadata.get("delegation_id") or "")
+                    == delegation_id
+                ):
+                    _tag_deferred_completion_fallback(queued_event, record)
+                    record["fallback_queued"] = True
+                    break
+    # Publish only after any already-queued fallback carries the claim. A
+    # concurrent settlement can never observe an unbound record and retire it.
     with lock:
         pending = getattr(runner, "_deferred_completion_deliveries", None)
         if not isinstance(pending, dict):
             pending = {}
             runner._deferred_completion_deliveries = pending
-        record = {
-            "text": synth_text,
-            "delegation_id": delegation_id,
-            "claim_id": claim_id,
-            "identity": identity,
-            "generation": generation,
-            "source": source,
-            "parent_session_id": parent_session_id,
-            "fallback_queued": False,
-            "siblings": [],
-            "renewal_delegation_id": delegation_id,
-            "renewal_claim_id": claim_id,
-        }
         pending.setdefault(session_key, []).append(record)
     task = asyncio.create_task(
         _renew_deferred_completion_claim(
@@ -10731,7 +10754,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # genuine user message in the adapter's single pending slot.
         if getattr(event, "internal", False):
             _internal_text = event.text or ""
-            _internal_metadata = getattr(event, "metadata", None) or {}
+            _internal_metadata = getattr(event, "metadata", None)
+            if not isinstance(_internal_metadata, dict):
+                _internal_metadata = {}
+                event.metadata = _internal_metadata
             _is_subagent_completion = (
                 _internal_metadata.get("internal_event_kind")
                 == "subagent_completion"
@@ -10759,6 +10785,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         exc_info=True,
                     )
             if _is_subagent_completion:
+                _internal_metadata["durable_delivery_deferred"] = True
+                _internal_metadata["durable_delivery_session_key"] = session_key
+                _internal_metadata["durable_delivery_generation"] = int(
+                    _busy_state.persistent.run_generation
+                )
                 _queue_typed_internal_followup(self, session_key, event)
                 logger.info(
                     "Queued subagent completion for typed idle follow-up: session=%s",

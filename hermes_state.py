@@ -10135,6 +10135,34 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
 
         return self._execute_write(_do)
 
+    def set_latest_user_content(
+        self, session_id: str, previous_content: Any, content: Any
+    ) -> int:
+        """Backfill mutated content onto the newest active user row.
+
+        In-place preflight compaction can persist and identity-stamp the
+        current user message before multimodal hook context is appended. The
+        later append-only flush then skips that live dict, so a reload would
+        lose the provider-visible text part. Match the previously persisted
+        bytes before replacing them so an unexpected tail or concurrent
+        rewrite fails closed. Returns 0 or 1.
+        """
+        encoded_previous = self._encode_content(previous_content)
+        encoded = self._encode_content(content)
+
+        def _do(conn):
+            cursor = conn.execute(
+                "UPDATE messages SET content = ? WHERE id = ("
+                "SELECT id FROM messages "
+                "WHERE session_id = ? AND role = 'user' AND active = 1 "
+                "ORDER BY id DESC LIMIT 1"
+                ") AND content IS ?",
+                (encoded, session_id, encoded_previous),
+            )
+            return cursor.rowcount
+
+        return self._execute_write(_do)
+
     def set_tool_result_content(
         self, session_id: str, tool_call_id: str, content: Any
     ) -> int:

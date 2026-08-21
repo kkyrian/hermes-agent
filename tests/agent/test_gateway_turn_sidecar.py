@@ -169,7 +169,7 @@ class TestStringContentSidecarDelivery:
         with patch(
             "hermes_cli.plugins.invoke_hook",
             return_value=[{"context": "PLUGIN-CTX"}],
-        ):
+        ), patch("hermes_cli.plugins.has_hook", return_value=True):
             ctx = _build(agent)
         msg = ctx.messages[ctx.current_turn_user_idx]
         assert msg["api_content"] == "hello\n\nPLUGIN-CTX\n\n" + VC_NOTE

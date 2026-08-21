@@ -723,6 +723,66 @@ class TestPrologueMoaAndInPlaceBackfill:
             "sess-1", "hello", "hello\n\nPLUGIN-CTX"
         )
 
+    def test_inplace_compaction_backfills_multimodal_hook_content_into_db(self):
+        agent = _FakeAgent()
+        agent.compression_enabled = True
+        agent._session_db = MagicMock()
+        calls = {"n": 0}
+
+        def _should_compress(_tokens):
+            calls["n"] += 1
+            return calls["n"] == 1
+
+        agent.context_compressor = types.SimpleNamespace(
+            protect_first_n=0,
+            protect_last_n=0,
+            threshold_tokens=1,
+            context_length=1000,
+            last_prompt_tokens=-1,
+            should_compress=_should_compress,
+            should_defer_preflight_to_real_usage=lambda _t: False,
+            get_active_compression_failure_cooldown=lambda: None,
+        )
+
+        def _compress(messages, _system, approx_tokens=None, task_id=None):
+            agent._last_compaction_in_place = True
+            return (
+                [
+                    {"role": "assistant", "content": "compaction summary"},
+                    dict(messages[-1]),
+                ],
+                "SYSTEM",
+            )
+
+        agent._compress_context = _compress
+        original = [
+            {"type": "text", "text": "inspect this"},
+            {"type": "image_url", "image_url": {"url": "https://x/img.png"}},
+        ]
+        expected_before = json.loads(json.dumps(original))
+        history = [
+            {"role": "user", "content": "x" * 4000},
+            {"role": "assistant", "content": "x" * 4000},
+        ]
+        with patch(
+            "hermes_cli.plugins.invoke_hook",
+            return_value=[{"context": "PLUGIN-CTX"}],
+        ), patch("hermes_cli.plugins.has_hook", return_value=True):
+            ctx = _build(
+                agent,
+                user_message=original,
+                conversation_history=history,
+                summarize_user_message_for_log=lambda value: str(value),
+            )
+
+        final_content = ctx.messages[ctx.current_turn_user_idx]["content"]
+        assert final_content[-1] == {"type": "text", "text": "PLUGIN-CTX"}
+        agent._session_db.set_latest_user_content.assert_called_once_with(
+            "sess-1",
+            expected_before,
+            final_content,
+        )
+
 
 class TestSetLatestUserApiContent:
     def _open(self, tmp_path):
@@ -750,6 +810,17 @@ class TestSetLatestUserApiContent:
             assert db.set_latest_user_api_content("s1", "other", "other+CTX") == 0
             msgs = db.get_messages_as_conversation("s1")
             assert "api_content" not in msgs[0]
+        finally:
+            db.close()
+
+    def test_multimodal_content_backfill_survives_reload(self, tmp_path):
+        db = self._open(tmp_path)
+        original = [{"type": "text", "text": "inspect this"}]
+        final = [*original, {"type": "text", "text": "PLUGIN-CTX"}]
+        try:
+            db.append_message("s1", "user", content=original)
+            assert db.set_latest_user_content("s1", original, final) == 1
+            assert db.get_messages_as_conversation("s1")[0]["content"] == final
         finally:
             db.close()
 

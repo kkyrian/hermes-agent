@@ -729,17 +729,27 @@ def _has_destructive_wipefs(command: str) -> bool:
 
 
 def _has_recursive_zfs_destroy(command: str) -> bool:
-    """Detect recursive ZFS subtree destruction across combined/separate flags."""
+    """Detect real recursive ZFS destruction while permitting dry-run probes."""
     for match in _HARDLINE_ZFS_DESTROY_CANDIDATE_RE.finditer(command):
         try:
             tokens = shlex.split(match.group("args"), posix=True)
         except ValueError:
             continue
+        recursive = False
+        dry_run = False
         for token in tokens:
             if not token.startswith("-") or token == "--":
                 break
-            if "r" in token[1:].lower():
-                return True
+            lowered = token.lower()
+            if lowered.startswith("--"):
+                recursive = recursive or lowered == "--recursive"
+                dry_run = dry_run or lowered == "--dry-run"
+            else:
+                flags = lowered[1:]
+                recursive = recursive or "r" in flags
+                dry_run = dry_run or "n" in flags
+        if recursive and not dry_run:
+            return True
     return False
 
 

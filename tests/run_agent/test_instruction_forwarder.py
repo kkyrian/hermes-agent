@@ -1,12 +1,13 @@
 from pathlib import Path
 
+from agent.prompt_builder import build_context_files_prompt
 
-def test_claude_instruction_entrypoint_is_portable_regular_file():
+
+def test_repository_instruction_discovery_forwards_canonical_agents_contract():
     root = Path(__file__).resolve().parents[2]
-    entrypoint = root / "CLAUDE.md"
+    forwarded = build_context_files_prompt(cwd=str(root), skip_soul=True)
 
-    assert entrypoint.is_file()
-    assert not entrypoint.is_symlink()
-    assert "Read and follow [AGENTS.md](AGENTS.md) completely" in entrypoint.read_text(
-        encoding="utf-8"
-    )
+    assert "## AGENTS.md" in forwarded
+    assert "## KK public fork maintenance" in forwarded
+    assert "`kk/handler-runtime` is the single durable KK patch branch" in forwarded
+    assert "Claude entry point" not in forwarded

@@ -186,6 +186,7 @@ async def test_rejected_subagent_admission_uses_separate_typed_followup_queue() 
     adapter = _make_adapter()
     event = _make_internal_event("completion after final boundary")
     event.metadata["internal_event_kind"] = "subagent_completion"
+    event.metadata["delegation_id"] = "deleg_rejected"
     sk = build_session_key(event.source)
     parent = _make_running_parent()
     parent.enqueue_internal_event.return_value = False
@@ -194,6 +195,9 @@ async def test_rejected_subagent_admission_uses_separate_typed_followup_queue() 
 
     assert await runner._handle_active_session_busy_message(event, sk) is True
     assert adapter._pending_messages == {}
+    assert event.metadata["durable_delivery_deferred"] is True
+    assert event.metadata["durable_delivery_session_key"] == sk
+    assert event.metadata["durable_delivery_generation"] >= 0
     assert _dequeue_typed_internal_followup(runner, sk) is event
     adapter._send_with_retry.assert_not_called()
 

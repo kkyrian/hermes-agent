@@ -18,6 +18,7 @@ import pytest
 from gateway.config import Platform
 from gateway.run import (
     GatewayRunner,
+    _defer_completion_delivery,
     _dequeue_typed_internal_followup,
     _mark_deferred_completion_fallback_consumed,
     _renew_deferred_completion_claim,
@@ -243,6 +244,48 @@ def test_busy_mailbox_admission_defers_durable_ack_until_turn_settlement(
     assert acknowledgements[0][0] == "deleg_busy_ack"
     assert not runner._completion_deliveries_inflight
     assert runner._completion_deliveries_delivered
+
+
+@pytest.mark.asyncio
+async def test_rejected_busy_admission_binds_queued_fallback_to_durable_claim():
+    runner = _runner(SimpleNamespace(handle_message=AsyncMock()))
+    runner._typed_internal_followups = {}
+    runner._typed_internal_followups_lock = __import__("threading").Lock()
+    session_key = "agent:main:telegram:dm:12345:678"
+    fallback = MessageEvent(
+        text="completion evidence",
+        source=SessionSource(
+            platform=Platform.TELEGRAM, chat_id="12345", chat_type="dm"
+        ),
+        internal=True,
+        metadata={
+            "internal_event_kind": "subagent_completion",
+            "delegation_id": "deleg_rejected",
+        },
+    )
+    runner._typed_internal_followups[session_key] = [fallback]
+
+    _defer_completion_delivery(
+        runner,
+        session_key,
+        synth_text=fallback.text,
+        delegation_id="deleg_rejected",
+        claim_id="claim-rejected",
+        identity=("async_delegation", "deleg_rejected", ""),
+        generation=7,
+        source=fallback.source,
+        parent_session_id="parent-session",
+    )
+
+    record = runner._deferred_completion_deliveries[session_key][0]
+    assert record["fallback_queued"] is True
+    assert fallback.metadata["durable_completion_claims"] == [{
+        "delegation_id": "deleg_rejected",
+        "claim_id": "claim-rejected",
+    }]
+    record["renew_task"].cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await record["renew_task"]
 
 
 def test_harvested_leftover_keeps_durable_claim_until_recursive_consumption(
