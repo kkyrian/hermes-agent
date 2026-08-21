@@ -573,10 +573,10 @@ HARDLINE_PATTERNS = [
     # after a command separator, or after sudo/env wrappers) so we don't
     # false-positive on "echo reboot" or "grep 'shutdown' logs".
     # _CMDPOS matches start-of-command positions.
-    (_CMDPOS + r'(shutdown|reboot|halt|poweroff)\b', "system shutdown/reboot"),
-    (_CMDPOS + r'init\s+[06]\b', "init 0/6 (shutdown/reboot)"),
-    (_CMDPOS + r'systemctl\s+(poweroff|reboot|halt|kexec)\b', "systemctl poweroff/reboot"),
-    (_CMDPOS + r'telinit\s+[06]\b', "telinit 0/6 (shutdown/reboot)"),
+    (_CMDPOS + _CMDPATH + r'(shutdown|reboot|halt|poweroff)\b', "system shutdown/reboot"),
+    (_CMDPOS + _CMDPATH + r'init\s+[06]\b', "init 0/6 (shutdown/reboot)"),
+    (_CMDPOS + _CMDPATH + r'systemctl\s+(poweroff|reboot|halt|kexec)\b', "systemctl poweroff/reboot"),
+    (_CMDPOS + _CMDPATH + r'telinit\s+[06]\b', "telinit 0/6 (shutdown/reboot)"),
 ]
 
 # Pre-compiled variant used by the hot-path matcher. Building these at module
@@ -615,6 +615,71 @@ _HARDLINE_RAW_DEVICE_COMMAND_RE = re.compile(
     _CMDPOS + _CMDPATH + r'(?P<command>cp|sgdisk)\b(?P<args>[^\n;|&]*)',
     _RE_FLAGS,
 )
+_HARDLINE_RM_CANDIDATE_RE = re.compile(
+    _CMDPOS + _CMDPATH + r'rm\b(?P<args>[^\n;|&]*)', _RE_FLAGS
+)
+_HARDLINE_DD_CANDIDATE_RE = re.compile(
+    _CMDPOS + _CMDPATH + r'dd\b(?P<args>[^\n;|&]*)', _RE_FLAGS
+)
+
+
+def _is_protected_rm_path(path: str) -> bool:
+    """Return whether a lexical rm operand is an unrecoverable root."""
+    home = posixpath.normpath(os.path.expanduser("~"))
+    alias = re.fullmatch(r'(?:~|\$home|\$\{home\})(?P<suffix>/.*)?', path, re.IGNORECASE)
+    if alias:
+        path = home + (alias.group("suffix") or "")
+    if not path.startswith("/"):
+        return False
+    normalized = "/" + posixpath.normpath(path).lstrip("/")
+    protected = {"/", "/home", "/root", "/etc", "/usr", "/var", "/bin", "/sbin", "/boot", "/lib"}
+    if home.startswith("/"):
+        protected.add(home)
+    return normalized in protected
+
+
+def _has_recursive_protected_rm(command: str) -> bool:
+    """Parse rm flags and normalize operands before applying the hardline."""
+    for match in _HARDLINE_RM_CANDIDATE_RE.finditer(command):
+        try:
+            tokens = shlex.split(match.group("args"), posix=True)
+        except ValueError:
+            continue
+        recursive = False
+        operands: list[str] = []
+        end_options = False
+        for token in tokens:
+            if not end_options and token == "--":
+                end_options = True
+                continue
+            if not end_options and token.startswith("-") and token != "-":
+                option = token.lower()
+                recursive = recursive or option == "--recursive" or (
+                    not option.startswith("--") and any(flag in option[1:] for flag in "rR")
+                )
+                continue
+            operands.append(token)
+        if recursive and any(_is_protected_rm_path(path) for path in operands):
+            return True
+    return False
+
+
+def _has_dd_to_raw_device(command: str) -> bool:
+    """Parse dd assignments so quotes and every protected device class work."""
+    for match in _HARDLINE_DD_CANDIDATE_RE.finditer(command):
+        try:
+            tokens = shlex.split(match.group("args"), posix=True)
+        except ValueError:
+            continue
+        for token in tokens:
+            if "=" not in token:
+                continue
+            name, target = token.split("=", 1)
+            if name.lower() == "of" and re.fullmatch(
+                _HARDLINE_BLOCK_DEVICE, target, re.IGNORECASE
+            ):
+                return True
+    return False
 
 
 def _is_protected_find_path(path: str) -> bool:
@@ -954,6 +1019,10 @@ def detect_hardline_command(command: str) -> tuple:
     for command_variant in _command_detection_variants(command):
         if _has_unquoted_raw_device_redirection(command_variant):
             return (True, "redirect to raw block device")
+        if _has_recursive_protected_rm(command_variant):
+            return (True, "recursive delete of root/system/home")
+        if _has_dd_to_raw_device(command_variant):
+            return (True, "dd to raw block device")
         variant_lower = command_variant.lower()
         if _has_lexically_protected_find_delete(variant_lower):
             return (True, "recursive find deletion of root/system/home")
