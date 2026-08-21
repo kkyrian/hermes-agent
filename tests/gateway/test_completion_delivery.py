@@ -22,6 +22,7 @@ from gateway.run import (
     _dequeue_typed_internal_followup,
     _mark_deferred_completion_fallback_consumed,
     _renew_deferred_completion_claim,
+    _schedule_capped_typed_internal_followup,
     _settle_deferred_completion_deliveries,
     _tag_deferred_completion_fallback,
 )
@@ -627,6 +628,38 @@ def test_lost_primary_claim_does_not_stop_sibling_renewal(monkeypatch):
     assert renewals == [
         ("deleg_primary", "claim-primary"),
         ("deleg_sibling", "claim-sibling"),
+    ]
+
+
+def test_recursion_capped_internal_followup_is_scheduled_without_user_wakeup():
+    seen = []
+
+    class _Adapter:
+        _active_sessions = {}
+
+        async def _process_message_background(self, event, session_key):
+            seen.append((event.text, session_key))
+
+    async def _run():
+        adapter = _Adapter()
+        runner = _runner(adapter)
+        event = MessageEvent(
+            text="completion evidence",
+            source=SessionSource(
+                platform=Platform.TELEGRAM,
+                chat_id="12345",
+                chat_type="dm",
+            ),
+            internal=True,
+        )
+        assert _schedule_capped_typed_internal_followup(
+            runner, adapter, "agent:main:telegram:dm:12345:678", event, 3
+        ) is True
+        await asyncio.gather(*list(runner._background_tasks))
+
+    asyncio.run(_run())
+    assert seen == [
+        ("completion evidence", "agent:main:telegram:dm:12345:678")
     ]
 
 

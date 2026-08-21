@@ -3570,6 +3570,60 @@ def _queue_typed_internal_followup(runner: Any, session_key: str, event: Message
         queues.setdefault(session_key, []).append(event)
 
 
+def _schedule_capped_typed_internal_followup(
+    runner: Any,
+    adapter: Any,
+    session_key: str,
+    event: MessageEvent,
+    run_generation: int,
+) -> bool:
+    """Drain a recursion-capped internal completion without a user wake-up."""
+    process = getattr(adapter, "_process_message_background", None)
+    if not callable(process):
+        return False
+
+    async def _drain() -> None:
+        try:
+            for _ in range(600):
+                active = getattr(adapter, "_active_sessions", {})
+                if session_key not in active:
+                    break
+                await asyncio.sleep(0.05)
+            else:
+                _queue_typed_internal_followup(runner, session_key, event)
+                return
+            await process(event, session_key)
+            if _mark_deferred_completion_fallback_consumed(
+                runner, session_key, event
+            ):
+                await _settle_deferred_completion_deliveries(
+                    runner,
+                    session_key,
+                    run_generation,
+                    {},
+                    turn_completed=True,
+                )
+        except asyncio.CancelledError:
+            _queue_typed_internal_followup(runner, session_key, event)
+            raise
+        except Exception:
+            _queue_typed_internal_followup(runner, session_key, event)
+            logger.warning(
+                "Capped typed internal follow-up drain failed for session=%s",
+                session_key or "?",
+                exc_info=True,
+            )
+
+    task = asyncio.create_task(_drain())
+    background = getattr(runner, "_background_tasks", None)
+    if not isinstance(background, set):
+        background = set()
+        runner._background_tasks = background
+    background.add(task)
+    task.add_done_callback(background.discard)
+    return True
+
+
 def _tag_deferred_completion_fallback(
     event: MessageEvent,
     record: Dict[str, Any],
@@ -30046,9 +30100,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         )
                         == "subagent_completion"
                     ):
-                        _queue_typed_internal_followup(
-                            self, session_key, pending_event
-                        )
+                        if not _schedule_capped_typed_internal_followup(
+                            self,
+                            adapter,
+                            session_key,
+                            pending_event,
+                            int(run_generation or 0),
+                        ):
+                            _queue_typed_internal_followup(
+                                self, session_key, pending_event
+                            )
                     elif adapter and pending_event:
                         merge_pending_message_event(adapter._pending_messages, session_key, pending_event)
                     elif adapter and hasattr(adapter, 'queue_message'):

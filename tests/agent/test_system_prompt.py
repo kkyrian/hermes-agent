@@ -294,6 +294,17 @@ def test_model_visible_blocks_return_cached_prompt_tiers():
     rebuild.assert_not_called()
 
 
+def test_model_visible_blocks_do_not_rebuild_restored_prompt_tiers():
+    agent = _make_agent()
+    agent._cached_system_prompt = "persisted prompt bytes"
+    agent._cached_system_prompt_parts = None
+
+    with patch("agent.system_prompt.build_system_prompt_parts") as rebuild:
+        assert render_model_visible_context_blocks(agent) == {}
+
+    rebuild.assert_not_called()
+
+
 def test_coding_prompt_preserves_legacy_workspace_order(monkeypatch):
     """The cache split must not reorder the stored coding prompt."""
     import agent.system_prompt as system_prompt
