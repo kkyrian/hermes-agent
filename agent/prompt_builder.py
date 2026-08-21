@@ -1645,11 +1645,23 @@ def _load_skill_prompt_exposure_policy() -> tuple[dict, tuple]:
             tiers[name] = next(iter(declared))
 
     conditional: dict[str, dict] = {}
-    raw_conditional = raw.get("conditional") or {}
+    raw_conditional_value = raw.get("conditional")
+    raw_conditional = raw_conditional_value or {}
+    if raw_conditional_value is not None and not isinstance(raw_conditional_value, dict):
+        default = "hidden"
+        tiers = {name: "hidden" for name in tiers}
     if isinstance(raw_conditional, dict):
         for raw_name, spec in raw_conditional.items():
             name = str(raw_name).strip()
-            if not name or not isinstance(spec, dict):
+            if not name:
+                continue
+            if not isinstance(spec, dict):
+                tiers[name] = "hidden"
+                conditional[name] = {
+                    "tier": "hidden",
+                    "requires_toolsets": [],
+                    "requires_executables": [],
+                }
                 continue
             tier = str(spec.get("tier") or tiers.get(name) or default).strip().lower()
             if name in ambiguous_memberships:

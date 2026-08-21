@@ -107,7 +107,10 @@ def _is_live_profile(home: Path) -> bool:
 
 def _policy_from_fragment(path: Path) -> dict:
     fragment = _load_yaml(path)
-    policy = ((fragment.get("skills") or {}).get("prompt_exposure") or {})
+    skills = fragment.get("skills")
+    if not isinstance(skills, dict) or "prompt_exposure" not in skills:
+        raise ValueError("policy fragment must contain skills.prompt_exposure mapping")
+    policy = skills["prompt_exposure"]
     if not isinstance(policy, dict):
         raise ValueError("policy fragment must contain skills.prompt_exposure mapping")
     return policy

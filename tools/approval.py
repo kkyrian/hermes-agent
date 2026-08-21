@@ -554,12 +554,9 @@ HARDLINE_PATTERNS = [
     (_RM_FLAG_PREFIX + _hardline_rm_path(r'(?:~|\$\{?HOME\}?)(?:/?|/\*)?'), "recursive delete of home directory"),
     # Filesystem format
     (_CMDPOS + _CMDPATH + r'mkfs(\.[a-z0-9]+)?\b', "format filesystem (mkfs)"),
-    # Raw block device overwrites (dd + redirection)
-    (_CMDPOS + _CMDPATH + r'dd\b[^\n]*\bof=/dev/(sd|nvme|hd|mmcblk|vd|xvd)[a-z0-9]*', "dd to raw block device"),
-    (_CMDPOS + _CMDPATH + rf'(?:blkdiscard|shred)\b[^\n]*["\']?{_HARDLINE_BLOCK_DEVICE}\b', "erase or discard an entire raw block device"),
-    (_CMDPOS + _CMDPATH + rf'sgdisk\b[^\n]*(?:--zap-all|-Z)\b[^\n]*["\']?{_HARDLINE_BLOCK_DEVICE}\b', "erase a raw block-device partition table"),
-    (_CMDPOS + _CMDPATH + rf'nvme\s+(?:format|sanitize)\b[^\n]*["\']?{_HARDLINE_BLOCK_DEVICE}\b', "destructive NVMe format/sanitize"),
-    (_CMDPOS + _CMDPATH + rf'tee\b[^\n]*["\']?{_HARDLINE_BLOCK_DEVICE}\b', "write to an entire raw block device"),
+    # Raw-device operations are parsed by
+    # _has_destructive_raw_device_operation() below so help text, input data,
+    # and source operands do not trip the unconditional floor.
     # Whole storage-pool / volume destruction has no ordinary recovery path.
     # A recursive ``zfs destroy`` removes an entire dataset subtree and stays
     # unconditional.  Narrow dataset/snapshot deletion belongs in the normal
@@ -612,7 +609,10 @@ _HARDLINE_STORAGE_DESTROY_CANDIDATE_RE = re.compile(
     _RE_FLAGS,
 )
 _HARDLINE_RAW_DEVICE_COMMAND_RE = re.compile(
-    _CMDPOS + _CMDPATH + r'(?P<command>cp|sgdisk)\b(?P<args>[^\n;|&]*)',
+    _CMDPOS
+    + _CMDPATH
+    + r'(?P<command>cp|sgdisk|blkdiscard|shred|tee|nvme)\b'
+    + r'(?P<args>[^\n;|&]*)',
     _RE_FLAGS,
 )
 _HARDLINE_RM_CANDIDATE_RE = re.compile(
@@ -673,6 +673,8 @@ def _has_dd_to_raw_device(command: str) -> bool:
             tokens = _shell_segment_tokens(segment, start)
             if not tokens:
                 continue
+            if any(token in {"-h", "--help"} for token in tokens[1:]):
+                continue
             for token in tokens[1:]:
                 if "=" not in token:
                     continue
@@ -719,6 +721,8 @@ def _has_destructive_raw_device_operation(command: str) -> bool:
         except ValueError:
             continue
         command_name = match.group("command").lower()
+        if any(token in {"-h", "--help"} for token in tokens):
+            continue
         if command_name == "sgdisk":
             destructive = any(
                 token in {"--zap-all", "-Z"}
@@ -727,6 +731,16 @@ def _has_destructive_raw_device_operation(command: str) -> bool:
             if destructive and any(
                 re.fullmatch(_HARDLINE_BLOCK_DEVICE, token, re.IGNORECASE)
                 for token in tokens
+            ):
+                return True
+            continue
+
+        if command_name == "nvme":
+            if not tokens or tokens[0].lower() not in {"format", "sanitize"}:
+                continue
+            if any(
+                re.fullmatch(_HARDLINE_BLOCK_DEVICE, token, re.IGNORECASE)
+                for token in tokens[1:]
             ):
                 return True
             continue
@@ -740,7 +754,7 @@ def _has_destructive_raw_device_operation(command: str) -> bool:
                 skip_next = False
                 continue
             redirection = re.fullmatch(
-                r"\d*(?:>>?|<<?|&>>?)(?P<target>.*)", token
+                r"\d*(?:>{1,2}|<{1,3}|&>{1,2})(?P<target>.*)", token
             )
             if redirection:
                 if not redirection.group("target"):
@@ -762,6 +776,13 @@ def _has_destructive_raw_device_operation(command: str) -> bool:
                     skip_next = True
                 continue
             operands.append(token)
+        if command_name in {"blkdiscard", "shred", "tee"}:
+            if any(
+                re.fullmatch(_HARDLINE_BLOCK_DEVICE, operand, re.IGNORECASE)
+                for operand in operands
+            ):
+                return True
+            continue
         if target_directory:
             for source in operands:
                 target = posixpath.join(target_directory, posixpath.basename(source))

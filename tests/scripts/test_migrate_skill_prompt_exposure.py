@@ -40,6 +40,24 @@ def test_dry_run_has_no_side_effects(tmp_path):
     assert not (home / "backups").exists()
 
 
+@pytest.mark.parametrize(
+    "content",
+    (
+        "skills: {}\n",
+        "skills:\n  prompt_exposure: []\n",
+    ),
+)
+def test_policy_fragment_requires_explicit_mapping(tmp_path, content):
+    policy = tmp_path / "policy.yaml"
+    policy.write_text(content, encoding="utf-8")
+
+    with pytest.raises(
+        ValueError,
+        match="skills.prompt_exposure mapping",
+    ):
+        MOD._policy_from_fragment(policy)
+
+
 def test_apply_backup_and_rollback(tmp_path):
     home = tmp_path / "profile"
     home.mkdir()
