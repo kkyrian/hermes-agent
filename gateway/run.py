@@ -3600,16 +3600,19 @@ def _schedule_capped_typed_internal_followup(
                 )
                 _queue_typed_internal_followup(runner, session_key, event)
                 return
-            await process(event, session_key)
-            if _mark_deferred_completion_fallback_consumed(
+            followup_result = await process(event, session_key)
+            turn_completed = _turn_completed_durably(
+                followup_result, followup_result
+            )
+            if turn_completed and _mark_deferred_completion_fallback_consumed(
                 runner, session_key, event
             ):
                 await _settle_deferred_completion_deliveries(
                     runner,
                     session_key,
                     run_generation,
-                    {},
-                    turn_completed=True,
+                    followup_result,
+                    turn_completed=turn_completed,
                 )
         except asyncio.CancelledError:
             _queue_typed_internal_followup(runner, session_key, event)
@@ -30374,15 +30377,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         pending_event
                     ),
                 )
-                if _mark_deferred_completion_fallback_consumed(
+                turn_completed = _turn_completed_durably(
+                    followup_result, followup_result
+                )
+                if turn_completed and _mark_deferred_completion_fallback_consumed(
                     self, session_key, pending_event
                 ):
                     await _settle_deferred_completion_deliveries(
                         self,
                         session_key,
                         int(run_generation or 0),
-                        {},
-                        turn_completed=True,
+                        followup_result,
+                        turn_completed=turn_completed,
                     )
                 return _preserve_queued_followup_history_offset(result, followup_result)
         finally:

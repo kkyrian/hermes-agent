@@ -686,6 +686,79 @@ def _has_dd_to_raw_device(command: str) -> bool:
     return False
 
 
+def _iter_dispatched_command_tokens(command: str):
+    """Yield argv launched by common shell command dispatchers."""
+    xargs_options_with_arg = {
+        "-a", "--arg-file", "-d", "--delimiter", "-e", "-E", "--eof",
+        "-I", "--replace", "-L", "--max-lines", "-n", "--max-args",
+        "-P", "--max-procs", "-s", "--max-chars",
+    }
+    find_actions = {"-exec", "-execdir", "-ok", "-okdir"}
+    for segment in _iter_top_level_shell_segments(command):
+        for start, _, word in _iter_shell_command_word_spans(segment):
+            tokens = _shell_segment_tokens(segment, start)
+            if not tokens:
+                continue
+            executable = os.path.basename(
+                _deobfuscate_shell_word_for_detection(word)
+            ).lower()
+            if executable in {"command", "busybox"}:
+                index = 1
+                while index < len(tokens) and tokens[index].startswith("-"):
+                    index += 1
+                if index < len(tokens):
+                    yield tokens[index:]
+            elif executable == "xargs":
+                index = 1
+                while index < len(tokens):
+                    token = tokens[index]
+                    option, value = _split_option(token)
+                    if token == "--":
+                        index += 1
+                        break
+                    if not token.startswith("-") or token == "-":
+                        break
+                    index += 1
+                    if option in xargs_options_with_arg and value is None:
+                        index += 1
+                if index < len(tokens):
+                    yield tokens[index:]
+            elif executable == "find":
+                index = 1
+                while index < len(tokens):
+                    if tokens[index].lower() not in find_actions:
+                        index += 1
+                        continue
+                    index += 1
+                    end = index
+                    while end < len(tokens) and tokens[end] not in {";", "+"}:
+                        end += 1
+                    if index < end:
+                        yield tokens[index:end]
+                    index = end + 1
+
+
+def _dispatched_destructive_command(command: str) -> str | None:
+    """Return the nested hardline command family, when present."""
+    for tokens in _iter_dispatched_command_tokens(command):
+        executable = os.path.basename(tokens[0]).lower()
+        if re.fullmatch(r"mkfs(?:\.[a-z0-9]+)?", executable):
+            return "mkfs"
+        if executable != "dd" or any(
+            token in {"-h", "--help"} for token in tokens[1:]
+        ):
+            continue
+        for token in tokens[1:]:
+            if "=" not in token:
+                continue
+            name, target = token.split("=", 1)
+            if name.lower() == "of" and re.fullmatch(
+                _HARDLINE_BLOCK_DEVICE, target, re.IGNORECASE
+            ):
+                return "dd"
+    return None
+
+
 def _has_mkfs_command(command: str) -> bool:
     """Detect mkfs after assignments and wrappers with option operands."""
     for _, _, word in _iter_shell_command_word_spans(command):
@@ -832,7 +905,10 @@ def _has_lexically_protected_find_delete(command: str) -> bool:
             "-gid", "-perm", "-size", "-type", "-xtype", "-links", "-inum",
             "-fstype", "-context", "-printf", "-fprint", "-fls",
         }
-        narrowing_predicates = one_arg_predicates - {"-printf", "-fprint", "-fls"}
+        selector_predicates = {
+            "-name", "-iname", "-path", "-ipath", "-regex", "-iregex",
+            "-wholename", "-lname", "-ilname",
+        }
         zero_arg_narrowing = {"-empty", "-false"}
         has_delete_action = False
         has_narrowing_before_delete = False
@@ -846,14 +922,17 @@ def _has_lexically_protected_find_delete(command: str) -> bool:
                 continue
             if token_lower in {"-o", "-or", ",", "!", "-not"}:
                 has_broadening_operator = True
+            if not has_delete_action and token_lower in zero_arg_narrowing:
+                has_narrowing_before_delete = True
             if (
                 not has_delete_action
-                and (
-                    token_lower in narrowing_predicates
-                    or token_lower in zero_arg_narrowing
-                )
+                and token_lower in selector_predicates
+                and index + 1 < len(tokens)
             ):
-                has_narrowing_before_delete = True
+                selector = tokens[index + 1]
+                literal = re.sub(r"[.*?\[\]{}()^$+|\\]", "", selector)
+                if literal:
+                    has_narrowing_before_delete = True
             if token_lower in one_arg_predicates:
                 index += 2
                 continue
@@ -1105,6 +1184,11 @@ def detect_hardline_command(command: str) -> tuple:
     if malformed_grep:
         return (True, _MALFORMED_EXEC_DESCRIPTION)
     for command_variant in _command_detection_variants(command):
+        dispatched = _dispatched_destructive_command(command_variant)
+        if dispatched == "mkfs":
+            return (True, "format filesystem (mkfs)")
+        if dispatched == "dd":
+            return (True, "dd to raw block device")
         if _has_unquoted_raw_device_redirection(command_variant):
             return (True, "redirect to raw block device")
         if _has_recursive_protected_rm(command_variant):

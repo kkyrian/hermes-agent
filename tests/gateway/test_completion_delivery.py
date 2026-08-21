@@ -672,6 +672,47 @@ def test_recursion_capped_internal_followup_is_scheduled_without_user_wakeup():
     ]
 
 
+def test_failed_recursion_capped_followup_retains_durable_claim():
+    session_key = "agent:main:telegram:dm:12345:678"
+
+    class _Adapter:
+        _active_sessions = {}
+
+        async def _process_message_background(self, _event, _session_key):
+            return {"failed": True}
+
+    async def _run():
+        adapter = _Adapter()
+        runner = _runner(adapter)
+        runner._is_session_run_current = lambda _key, _generation: True
+        record = {
+            "text": "completion evidence",
+            "delegation_id": "deleg-failed-fallback",
+            "claim_id": "claim-failed-fallback",
+            "generation": 3,
+            "fallback_queued": True,
+        }
+        runner._deferred_completion_deliveries = {session_key: [record]}
+        event = MessageEvent(
+            text=record["text"],
+            source=SessionSource(
+                platform=Platform.TELEGRAM,
+                chat_id="12345",
+                chat_type="dm",
+            ),
+            internal=True,
+        )
+        _tag_deferred_completion_fallback(event, record)
+        assert _schedule_capped_typed_internal_followup(
+            runner, adapter, session_key, event, 3
+        ) is True
+        await asyncio.gather(*list(runner._background_tasks))
+        return record
+
+    record = asyncio.run(_run())
+    assert record.get("fallback_consumed") is not True
+
+
 def test_recursion_capped_internal_followup_drops_stale_generation():
     seen = []
 
