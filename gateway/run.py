@@ -3600,9 +3600,12 @@ def _schedule_capped_typed_internal_followup(
                 )
                 _queue_typed_internal_followup(runner, session_key, event)
                 return
-            followup_result = await process(event, session_key)
-            turn_completed = _turn_completed_durably(
-                followup_result, followup_result
+            session_tasks = getattr(adapter, "_session_tasks", None)
+            if isinstance(session_tasks, dict):
+                session_tasks[session_key] = asyncio.current_task()
+            await process(event, session_key)
+            turn_completed = bool(
+                getattr(event, "_hermes_turn_completed_durably", False)
             )
             if turn_completed and _mark_deferred_completion_fallback_consumed(
                 runner, session_key, event
@@ -3611,7 +3614,7 @@ def _schedule_capped_typed_internal_followup(
                     runner,
                     session_key,
                     run_generation,
-                    followup_result,
+                    {},
                     turn_completed=turn_completed,
                 )
         except asyncio.CancelledError:
@@ -18599,6 +18602,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             try:
                 _agent_result = await self._handle_message_with_agent(
                     event, source, _quick_key, _run_generation
+                )
+                event._hermes_turn_completed_durably = _turn_completed_durably(
+                    _agent_result, _agent_result
                 )
             except TurnLeaseTimeoutError as exc:
                 # This is a rejected message, not a completed agent turn. Return
