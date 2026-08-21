@@ -664,8 +664,9 @@ def test_recursion_capped_internal_followup_is_scheduled_without_user_wakeup():
             runner, adapter, "agent:main:telegram:dm:12345:678", event, 3
         ) is True
         await asyncio.gather(*list(runner._background_tasks))
+        return runner
 
-    asyncio.run(_run())
+    runner = asyncio.run(_run())
     assert seen == [
         ("completion evidence", "agent:main:telegram:dm:12345:678")
     ]
@@ -697,9 +698,14 @@ def test_recursion_capped_internal_followup_drops_stale_generation():
             runner, adapter, "agent:main:telegram:dm:12345:678", event, 3
         ) is True
         await asyncio.gather(*list(runner._background_tasks))
+        return runner
 
-    asyncio.run(_run())
+    runner = asyncio.run(_run())
     assert seen == []
+    queued = runner._typed_internal_followups[
+        "agent:main:telegram:dm:12345:678"
+    ]
+    assert [event.text for event in queued] == ["stale completion"]
 
 
 def test_settlement_preserves_record_deferred_during_async_classification(monkeypatch):

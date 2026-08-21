@@ -3598,6 +3598,7 @@ def _schedule_capped_typed_internal_followup(
                     session_key or "?",
                     run_generation,
                 )
+                _queue_typed_internal_followup(runner, session_key, event)
                 return
             await process(event, session_key)
             if _mark_deferred_completion_fallback_consumed(

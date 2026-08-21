@@ -43,9 +43,12 @@ def test_cli_completion_drain_uses_visible_session_identity(monkeypatch):
     cli._drain_process_notifications("cli-idle")
 
     assert calls == [("visible-session", True)]
-    assert cli._pending_input.get_nowait() == "completion payload"
+    queued = cli._pending_input.get_nowait()
+    assert str(queued) == "completion payload"
+    assert queued.event is event
+    assert queued.claim == "claim-token"
     assert claimed == [(event, "cli-idle")]
-    assert completed == [(event, "claim-token")]
+    assert completed == []
 
 
 def test_cli_completion_drain_admits_to_active_parent_mailbox(monkeypatch):
@@ -133,10 +136,12 @@ def test_cli_completion_leftover_is_requeued_before_acknowledgement(monkeypatch)
     result = {"pending_internal_events": ["leftover completion"]}
     cli._settle_admitted_process_notifications(result)
 
-    assert cli._pending_input.get_nowait() == "leftover completion"
+    queued = cli._pending_input.get_nowait()
+    assert str(queued) == "leftover completion"
+    assert queued.claim == "leftover-claim"
     assert "pending_internal_events" not in result
     assert completed == []
-    assert released == [(event, "leftover-claim")]
+    assert released == []
 
 
 def test_cli_completion_claim_is_released_when_turn_has_no_result(monkeypatch):
@@ -183,9 +188,11 @@ def test_cli_failed_turn_harvests_completion_before_acknowledgement(monkeypatch)
 
     cli._settle_admitted_process_notifications({"error": "provider failed"})
 
-    assert cli._pending_input.get_nowait() == "completion payload"
+    queued = cli._pending_input.get_nowait()
+    assert str(queued) == "completion payload"
+    assert queued.claim == "failed-claim"
     assert completed == []
-    assert released == [(event, "failed-claim")]
+    assert released == []
 
 
 def test_cli_failed_turn_releases_unharvested_completion_claim(monkeypatch):

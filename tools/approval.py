@@ -777,6 +777,10 @@ def _has_destructive_raw_device_operation(command: str) -> bool:
                 continue
             operands.append(token)
         if command_name in {"blkdiscard", "shred", "tee"}:
+            if command_name == "blkdiscard" and any(
+                token in {"-n", "--dry-run"} for token in tokens
+            ):
+                continue
             if any(
                 re.fullmatch(_HARDLINE_BLOCK_DEVICE, operand, re.IGNORECASE)
                 for operand in operands
@@ -831,7 +835,7 @@ def _has_lexically_protected_find_delete(command: str) -> bool:
         narrowing_predicates = one_arg_predicates - {"-printf", "-fprint", "-fls"}
         zero_arg_narrowing = {"-empty", "-false"}
         has_delete_action = False
-        has_narrowing_predicate = False
+        has_narrowing_before_delete = False
         has_broadening_operator = False
         while index < len(tokens):
             token = tokens[index]
@@ -842,8 +846,14 @@ def _has_lexically_protected_find_delete(command: str) -> bool:
                 continue
             if token_lower in {"-o", "-or", ",", "!", "-not"}:
                 has_broadening_operator = True
-            if token_lower in narrowing_predicates or token_lower in zero_arg_narrowing:
-                has_narrowing_predicate = True
+            if (
+                not has_delete_action
+                and (
+                    token_lower in narrowing_predicates
+                    or token_lower in zero_arg_narrowing
+                )
+            ):
+                has_narrowing_before_delete = True
             if token_lower in one_arg_predicates:
                 index += 2
                 continue
@@ -869,7 +879,7 @@ def _has_lexically_protected_find_delete(command: str) -> bool:
                 static_prefix = path[:glob_index].rstrip("/") or "/"
                 if _is_protected_find_path(static_prefix):
                     glob_protected = True
-            if has_narrowing_predicate and not has_broadening_operator:
+            if has_narrowing_before_delete and not has_broadening_operator:
                 continue
             if direct_protected or glob_protected:
                 return True

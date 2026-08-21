@@ -4967,6 +4967,20 @@ class _VoiceInputMessage:
         return self.text
 
 
+class _DeferredCompletionInput:
+    """A claimed completion queued for its own durable CLI turn."""
+
+    __slots__ = ("text", "event", "claim")
+
+    def __init__(self, text: str, event: dict, claim: str):
+        self.text = text
+        self.event = event
+        self.claim = claim
+
+    def __str__(self) -> str:
+        return self.text
+
+
 class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
     """
     Interactive CLI for the Hermes Agent.
@@ -12822,8 +12836,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                         exc_info=True,
                     )
             if not admitted:
-                self._pending_input.put(synthetic_message)
-                complete_event_delivery(event, claim)
+                self._queue_claimed_completion_input(
+                    event, claim, synthetic_message
+                )
             else:
                 pending_claims = getattr(
                     self, "_admitted_process_notification_claims", None
@@ -12838,10 +12853,16 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         """Refresh every durable completion claim held by the active CLI turn."""
         from tools.async_delegation import renew_completion_delivery
 
-        claims = getattr(self, "_admitted_process_notification_claims", None)
-        if not isinstance(claims, list):
-            return
-        for event, claim, _message in list(claims):
+        claims = list(
+            getattr(self, "_admitted_process_notification_claims", None) or []
+        )
+        claims.extend(
+            (item.event, item.claim, item.text)
+            for item in list(
+                getattr(self, "_queued_process_notification_claims", None) or []
+            )
+        )
+        for event, claim, _message in claims:
             delegation_id = str(event.get("delegation_id") or "")
             if not delegation_id or not claim:
                 continue
@@ -12883,6 +12904,18 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             thread.join(timeout=1.0)
         self._admitted_process_notification_renew_stop = None
         self._admitted_process_notification_renew_thread = None
+
+    def _queue_claimed_completion_input(
+        self, event: dict, claim: str, message: str
+    ) -> None:
+        item = _DeferredCompletionInput(message, event, claim)
+        queued = getattr(self, "_queued_process_notification_claims", None)
+        if not isinstance(queued, list):
+            queued = []
+            self._queued_process_notification_claims = queued
+        queued.append(item)
+        self._pending_input.put(item)
+        self._start_admitted_process_notification_renewal()
 
     def _settle_admitted_process_notifications(self, result: object) -> None:
         """Acknowledge admitted completions only after consumption or requeue.
@@ -12934,14 +12967,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         for event, claim, message in claims:
             if message in remaining:
                 remaining.remove(message)
-                self._pending_input.put(message)
-                try:
-                    release_event_delivery(event, claim)
-                except Exception:
-                    logging.debug(
-                        "could not release queued CLI completion claim",
-                        exc_info=True,
-                    )
+                self._queue_claimed_completion_input(event, claim, message)
                 continue
             elif turn_failed:
                 try:
@@ -12962,6 +12988,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         for message in remaining:
             self._pending_input.put(message)
         result.pop("pending_internal_events", None)
+        if getattr(self, "_queued_process_notification_claims", None):
+            self._start_admitted_process_notification_renewal()
 
     def _drain_interrupt_queue_to_pending_input(self) -> None:
         """Move stray messages from ``_interrupt_queue`` into ``_pending_input``.
@@ -20336,6 +20364,13 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                     is_voice_input = isinstance(user_input, _VoiceInputMessage)
                     if is_voice_input:
                         user_input = user_input.text
+                    deferred_completion_input = (
+                        user_input
+                        if isinstance(user_input, _DeferredCompletionInput)
+                        else None
+                    )
+                    if deferred_completion_input is not None:
+                        user_input = deferred_completion_input.text
 
                     if not user_input:
                         continue
@@ -20450,9 +20485,44 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                     self._turn_summary_begin()
                     app.invalidate()  # Refresh status line
 
+                    chat_result = None
                     try:
-                        self.chat(user_input, images=submit_images or None, voice_input=is_voice_input)
+                        chat_result = self.chat(
+                            user_input,
+                            images=submit_images or None,
+                            voice_input=is_voice_input,
+                        )
                     finally:
+                        if deferred_completion_input is not None:
+                            acknowledged = False
+                            if chat_result is not None:
+                                try:
+                                    from tools.async_delegation import (
+                                        complete_event_delivery,
+                                    )
+
+                                    acknowledged = bool(complete_event_delivery(
+                                        deferred_completion_input.event,
+                                        deferred_completion_input.claim,
+                                    ))
+                                except Exception:
+                                    logging.debug(
+                                        "could not acknowledge queued CLI completion",
+                                        exc_info=True,
+                                    )
+                            if acknowledged:
+                                queued = getattr(
+                                    self,
+                                    "_queued_process_notification_claims",
+                                    None,
+                                )
+                                if isinstance(queued, list):
+                                    try:
+                                        queued.remove(deferred_completion_input)
+                                    except ValueError:
+                                        pass
+                            else:
+                                self._pending_input.put(deferred_completion_input)
                         self._agent_running = False
                         self._spinner_text = ""
                         self._tool_start_time = 0.0
