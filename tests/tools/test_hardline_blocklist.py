@@ -112,6 +112,7 @@ _HARDLINE_BLOCK = [
     "sudo zpool destroy tank",
     "zfs destroy -r tank/data",
     "zfs destroy -Rf tank/data",
+    "zfs destroy --recursive tank/data",
     "lvremove vg/data",
     "/bin/dd if=/dev/zero of=/dev/sda",
     "/sbin/mkfs.ext4 /dev/sda",
@@ -221,6 +222,9 @@ _HARDLINE_ALLOW = [
     # route it through ordinary approval instead of the unconditional floor.
     "zfs destroy tank/data",
     "zfs destroy tank/data@snapshot",
+    # Recursive ZFS dry-run probes report scope without deleting anything.
+    "zfs destroy -n -r tank/data",
+    "zfs destroy -nr tank/data",
 ]
 
 

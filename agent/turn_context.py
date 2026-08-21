@@ -24,6 +24,7 @@ move-and-name refactor with no semantic change.
 
 from __future__ import annotations
 
+import copy
 import logging
 import threading
 import time
@@ -1326,6 +1327,13 @@ def build_turn_context(
         and isinstance(messages[current_turn_user_idx], dict)
         else None
     )
+    _multimodal_content_before_notes = None
+    if (
+        isinstance(_plugin_turn_content, list)
+        and _preflight_compressed
+        and bool(getattr(agent, "_last_compaction_in_place", False))
+    ):
+        _multimodal_content_before_notes = copy.deepcopy(_plugin_turn_content)
     if plugin_user_context and isinstance(_plugin_turn_content, list):
         append_notes_to_multimodal_content(_plugin_turn_content, plugin_user_context)
         plugin_user_context = ""
@@ -1352,6 +1360,33 @@ def build_turn_context(
                 if plugin_user_context
                 else _gateway_notes
             )
+
+    # In-place preflight compaction has already inserted the current user row
+    # and marked the live dict persisted. Multimodal hook/gateway notes mutate
+    # that dict after insertion, so append-only crash persistence will skip it.
+    # Backfill the exact final list content onto the row that still matches the
+    # pre-hook snapshot; a failed identity guard leaves the DB untouched.
+    if (
+        _multimodal_content_before_notes is not None
+        and _plugin_turn_content != _multimodal_content_before_notes
+        and _preflight_compressed
+        and bool(getattr(agent, "_last_compaction_in_place", False))
+    ):
+        _db = getattr(agent, "_session_db", None)
+        if _db is not None:
+            try:
+                _db.set_latest_user_content(
+                    agent.session_id,
+                    _multimodal_content_before_notes,
+                    _plugin_turn_content,
+                )
+            except Exception:
+                logger.warning(
+                    "in-place compaction multimodal content backfill failed "
+                    "for session=%s",
+                    agent.session_id or "none",
+                    exc_info=True,
+                )
 
     # Per-turn file-mutation verifier state.
     agent._turn_failed_file_mutations = {}
