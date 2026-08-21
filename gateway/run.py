@@ -4001,6 +4001,13 @@ async def _settle_deferred_completion_deliveries(
             pending.pop(session_key, None)
 
 
+def _turn_completed_durably(result_holder_value: Any, result: Any) -> bool:
+    """Failed and missing turns must retain durable claims for replay."""
+    return result_holder_value is not None and not bool(
+        isinstance(result, dict) and result.get("failed")
+    )
+
+
 def _dequeue_typed_internal_followup(
     runner: Any, session_key: str
 ) -> Optional[MessageEvent]:
@@ -9547,6 +9554,22 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # No adapter — push back so we don't silently drop the item.
             overflow.insert(0, next_queued)
         return pending_event
+
+    def _prepend_pending_event(
+        self,
+        session_key: str,
+        adapter: Any,
+        event: "MessageEvent",
+    ) -> None:
+        """Put an event back at the FIFO head without losing the staged tail."""
+        pending_slot = getattr(adapter, "_pending_messages", None)
+        if pending_slot is None:
+            self._session_state(session_key).conversation.queued_events.insert(0, event)
+            return
+        staged = pending_slot.get(session_key)
+        if staged is not None:
+            self._session_state(session_key).conversation.queued_events.insert(0, staged)
+        pending_slot[session_key] = event
 
     def _queue_depth(self, session_key: str, *, adapter: Any = None) -> int:
         """Total pending /queue items for a session — slot + overflow."""
@@ -30014,7 +30037,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     session_key,
                     int(run_generation or 0),
                     result,
-                    turn_completed=result_holder[0] is not None,
+                    turn_completed=_turn_completed_durably(
+                        result_holder[0], result
+                    ),
                 )
 
             # Leftover /steer: if a steer arrived after the last tool batch
@@ -30024,7 +30049,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if result:
                 _leftover_steer = result.get("pending_steer")
                 if _leftover_steer:
-                    if not pending and not pending_event:
+                    if pending_event is not None:
+                        self._prepend_pending_event(
+                            session_key, adapter, pending_event
+                        )
+                        pending_event = MessageEvent(
+                            text=_leftover_steer,
+                            source=source,
+                            message_type=MessageType.TEXT,
+                        )
+                        pending = _leftover_steer
+                    elif not pending:
                         pending = _leftover_steer
                     elif callable(_queue_user := getattr(adapter, "queue_message", None)):
                         _queue_user(session_key, _leftover_steer)

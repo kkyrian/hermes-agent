@@ -169,6 +169,26 @@ class TestQueueConsumptionAfterCompletion:
         # gets the next-in-line item.
         assert adapter._pending_messages[session_key].text == "Q2"
 
+    def test_prepend_preserves_pending_event_ahead_of_staged_tail(self):
+        from gateway.run import GatewayRunner
+
+        runner = GatewayRunner.__new__(GatewayRunner)
+        runner._queued_events = {}
+        adapter = _StubAdapter()
+        session_key = "telegram:user:123"
+        staged_tail = MessageEvent(
+            text="Q2", source=MagicMock(), message_type=MessageType.TEXT
+        )
+        interrupted_head = MessageEvent(
+            text="Q1", source=MagicMock(), message_type=MessageType.TEXT
+        )
+        adapter._pending_messages[session_key] = staged_tail
+
+        runner._prepend_pending_event(session_key, adapter, interrupted_head)
+
+        assert adapter._pending_messages[session_key] is interrupted_head
+        assert [event.text for event in runner._queued_events[session_key]] == ["Q2"]
+
 
 class TestBusyInputModeQueueFifo:
     """Regression coverage for issue #28503.
@@ -218,5 +238,4 @@ class TestBusyInputModeQueueFifo:
             "five",
         ]
         assert runner._queue_depth(session_key, adapter=adapter) == len(texts)
-
 

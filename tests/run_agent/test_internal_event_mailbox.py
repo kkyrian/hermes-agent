@@ -9,6 +9,7 @@ from agent.conversation_loop import (
     _inject_pending_internal_events_before_stop,
     _inject_pending_internal_events_pre_api,
     _inject_pending_steer_pre_api,
+    _rollback_pre_api_internal_projection,
 )
 from agent.tool_executor import _persist_final_tool_result_batch
 
@@ -336,6 +337,39 @@ def test_pre_api_boundary_updates_an_already_persisted_tool_carrier() -> None:
 
     assert messages[-1]["_db_persisted"] is True
     assert db.rows[-1]["content"] == "first completion\n\nlate completion"
+
+
+def test_pre_api_persistence_failure_requeues_event_and_steer(monkeypatch) -> None:
+    agent = _bare_agent()
+    agent._open_internal_event_mailbox()
+    assert agent.enqueue_internal_event("late completion")
+    setattr(agent, "_pending_steer", "owner correction")
+    setattr(agent, "_pending_steer_lock", threading.Lock())
+    messages = [
+        {"role": "assistant", "tool_calls": [{"id": "call-1"}]},
+        {
+            "role": "tool",
+            "tool_call_id": "call-1",
+            "content": "first completion",
+            "_db_persisted": True,
+        },
+    ]
+
+    def _fail_persistence(_agent, _messages):
+        _agent._incremental_persistence_failed = True
+
+    monkeypatch.setattr(
+        "agent.tool_executor._persist_final_tool_result_batch",
+        _fail_persistence,
+    )
+
+    assert _inject_pending_internal_events_pre_api(agent, messages)
+    assert agent._incremental_persistence_failed is True
+    _rollback_pre_api_internal_projection(agent)
+
+    assert messages[-1]["content"] == "first completion"
+    assert agent._take_internal_events_at_boundary() == ["late completion"]
+    assert agent._drain_pending_steer() == "owner correction"
 
 
 def test_pre_api_boundary_requeues_when_no_safe_carrier_exists() -> None:
