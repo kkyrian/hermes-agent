@@ -943,6 +943,11 @@ def render_model_visible_context_blocks(
     cached = getattr(agent, "_cached_system_prompt_parts", None)
     if getattr(agent, "_cached_system_prompt", None) and isinstance(cached, dict):
         return dict(cached)
+    if getattr(agent, "_cached_system_prompt", None):
+        # A restored prompt is authoritative provider-visible state, but older
+        # session rows do not persist its tier decomposition. Rebuilding tiers
+        # from today's files/config would describe bytes the model cannot see.
+        return {}
     return build_system_prompt_parts(agent, system_message=system_message)
 
 

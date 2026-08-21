@@ -729,6 +729,9 @@ class TestExpandedHardlineFloor:
             "/sbin/reboot",
             "sudo /usr/sbin/shutdown -h now",
             "/usr/bin/systemctl reboot",
+            "FOO=bar mkfs.ext4 /dev/sda",
+            "env -i dd if=/dev/zero of=/dev/sda",
+            "sudo -u root mkfs /dev/sda",
         ),
     )
     def test_unrecoverable_equivalents_are_hardline_blocked(self, command):

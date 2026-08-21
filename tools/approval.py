@@ -618,9 +618,6 @@ _HARDLINE_RAW_DEVICE_COMMAND_RE = re.compile(
 _HARDLINE_RM_CANDIDATE_RE = re.compile(
     _CMDPOS + _CMDPATH + r'rm\b(?P<args>[^\n;|&]*)', _RE_FLAGS
 )
-_HARDLINE_DD_CANDIDATE_RE = re.compile(
-    _CMDPOS + _CMDPATH + r'dd\b(?P<args>[^\n;|&]*)', _RE_FLAGS
-)
 
 
 def _is_protected_rm_path(path: str) -> bool:
@@ -666,19 +663,35 @@ def _has_recursive_protected_rm(command: str) -> bool:
 
 def _has_dd_to_raw_device(command: str) -> bool:
     """Parse dd assignments so quotes and every protected device class work."""
-    for match in _HARDLINE_DD_CANDIDATE_RE.finditer(command):
-        try:
-            tokens = shlex.split(match.group("args"), posix=True)
-        except ValueError:
-            continue
-        for token in tokens:
-            if "=" not in token:
+    for segment in _iter_top_level_shell_segments(command):
+        for start, _, word in _iter_shell_command_word_spans(segment):
+            executable = os.path.basename(
+                _deobfuscate_shell_word_for_detection(word)
+            ).lower()
+            if executable != "dd":
                 continue
-            name, target = token.split("=", 1)
-            if name.lower() == "of" and re.fullmatch(
-                _HARDLINE_BLOCK_DEVICE, target, re.IGNORECASE
-            ):
-                return True
+            tokens = _shell_segment_tokens(segment, start)
+            if not tokens:
+                continue
+            for token in tokens[1:]:
+                if "=" not in token:
+                    continue
+                name, target = token.split("=", 1)
+                if name.lower() == "of" and re.fullmatch(
+                    _HARDLINE_BLOCK_DEVICE, target, re.IGNORECASE
+                ):
+                    return True
+    return False
+
+
+def _has_mkfs_command(command: str) -> bool:
+    """Detect mkfs after assignments and wrappers with option operands."""
+    for _, _, word in _iter_shell_command_word_spans(command):
+        executable = os.path.basename(
+            _deobfuscate_shell_word_for_detection(word)
+        ).lower()
+        if re.fullmatch(r"mkfs(?:\.[a-z0-9]+)?", executable):
+            return True
     return False
 
 
@@ -1023,6 +1036,8 @@ def detect_hardline_command(command: str) -> tuple:
             return (True, "recursive delete of root/system/home")
         if _has_dd_to_raw_device(command_variant):
             return (True, "dd to raw block device")
+        if _has_mkfs_command(command_variant):
+            return (True, "format filesystem (mkfs)")
         variant_lower = command_variant.lower()
         if _has_lexically_protected_find_delete(variant_lower):
             return (True, "recursive find deletion of root/system/home")
