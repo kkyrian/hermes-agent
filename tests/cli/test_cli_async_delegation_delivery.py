@@ -176,6 +176,36 @@ def test_cli_failed_turn_harvests_completion_before_acknowledgement(monkeypatch)
     assert completed == [(event, "failed-claim")]
 
 
+def test_cli_failed_turn_releases_unharvested_completion_claim(monkeypatch):
+    cli = HermesCLI.__new__(HermesCLI)
+    cli._pending_input = queue.Queue()
+    event = {"delegation_id": "deleg_persist_failed"}
+    cli._admitted_process_notification_claims = [
+        (event, "persist-failed-claim", "completion payload")
+    ]
+    cli._stop_admitted_process_notification_renewal = MagicMock()
+    cli.agent = MagicMock()
+    cli.agent._take_undelivered_internal_events_after_turn.return_value = []
+    released = []
+    completed = []
+    monkeypatch.setattr(
+        "tools.async_delegation.release_event_delivery",
+        lambda evt, token: released.append((evt, token)),
+    )
+    monkeypatch.setattr(
+        "tools.async_delegation.complete_event_delivery",
+        lambda evt, token: completed.append((evt, token)),
+    )
+
+    cli._settle_admitted_process_notifications(
+        {"failed": True, "final_response": ""}
+    )
+
+    assert released == [(event, "persist-failed-claim")]
+    assert completed == []
+    assert cli._pending_input.empty()
+
+
 def test_cli_active_completion_claims_are_renewed(monkeypatch):
     cli = HermesCLI.__new__(HermesCLI)
     event = {"delegation_id": "deleg_long_turn"}

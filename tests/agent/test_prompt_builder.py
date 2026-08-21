@@ -1054,6 +1054,26 @@ class TestSkillPromptExposure:
             available_toolsets={"terminal"}
         )
 
+    def test_conditional_scalar_requirements_fail_closed(
+        self, monkeypatch, tmp_path
+    ):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        self._write_skill(tmp_path, "malformed", "Malformed exposure")
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config_readonly",
+            lambda: {"skills": {"prompt_exposure": {"conditional": {
+                "malformed": {
+                    "tier": "description",
+                    "requires_toolsets": 1,
+                    "requires_executables": True,
+                }
+            }}}},
+        )
+
+        prompt = build_skills_system_prompt(available_toolsets={"terminal"})
+
+        assert "malformed" not in prompt
+
     def test_conditional_executable_fails_closed_for_remote_terminal(
         self, monkeypatch, tmp_path
     ):
