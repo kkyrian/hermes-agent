@@ -721,11 +721,25 @@ class TestExpandedHardlineFloor:
             "zfs destroy -f -R tank/home",
             "command wipefs -a /dev/sda",
             "command -p wipefs -a /dev/nvme0",
+            "rm -rf /etc/",
+            'rm --recursive "$HOME/"',
+            'dd if=/dev/zero of="/dev/sda"',
+            "dd if=/dev/zero of=/dev/mapper/vg-lv",
+            "dd of=/dev/zvol/tank/volume if=/dev/zero",
+            "/sbin/reboot",
+            "sudo /usr/sbin/shutdown -h now",
+            "/usr/bin/systemctl reboot",
         ),
     )
     def test_unrecoverable_equivalents_are_hardline_blocked(self, command):
         blocked, description = detect_hardline_command(command)
         assert blocked is True, command
+        assert description
+
+    def test_actual_home_path_is_hardline_blocked_after_normalization(self):
+        home = os.path.expanduser("~")
+        blocked, description = detect_hardline_command(f'rm "{home}/" -rf')
+        assert blocked is True
         assert description
 
     @pytest.mark.parametrize(
@@ -743,6 +757,10 @@ class TestExpandedHardlineFloor:
             "zpool destroy --help",
             "lvremove --help",
             "vgremove --test vg0",
+            "rm -rf /home/example/project",
+            "dd if=/dev/zero of=/tmp/disk.img",
+            'echo \'dd if=/dev/zero of="/dev/sda"\'',
+            'printf "%s" "/sbin/reboot"',
         ),
     )
     def test_recoverable_or_read_only_neighbors_are_not_hardline(self, command):
