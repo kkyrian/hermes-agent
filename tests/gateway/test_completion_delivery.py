@@ -25,6 +25,7 @@ from gateway.run import (
     _schedule_capped_typed_internal_followup,
     _settle_deferred_completion_deliveries,
     _tag_deferred_completion_fallback,
+    _turn_completed_durably,
 )
 from gateway.platforms.base import MessageEvent
 from gateway.session import SessionSource
@@ -77,6 +78,12 @@ def _async_event(delegation_id="deleg_duplicate"):
         "origin_profile": "default",
         "origin_hermes_home": "/tmp/hermes-default",
     }
+
+
+def test_failed_turn_is_not_durable_completion() -> None:
+    assert not _turn_completed_durably({"result": "present"}, {"failed": True})
+    assert not _turn_completed_durably(None, {"failed": False})
+    assert _turn_completed_durably({"result": "present"}, {"failed": False})
 
 
 def _completion_event(*, started_at, session_id="proc_reused"):

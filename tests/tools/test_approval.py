@@ -750,6 +750,9 @@ class TestExpandedHardlineFloor:
         (
             "wipefs /tmp/disk.img",
             "cp /dev/sda /tmp/disk.img",
+            "cp --target-directory=/tmp source /dev/sda",
+            "cp -t /tmp source /dev/sda",
+            "cp --help /dev/sda",
             "find . -name '*.tmp' -delete",
             "find /etc -name '-delete'",
             "find /etc -exec echo -delete ';'",

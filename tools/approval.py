@@ -559,7 +559,7 @@ HARDLINE_PATTERNS = [
     (_CMDPOS + _CMDPATH + rf'(?:blkdiscard|shred)\b[^\n]*["\']?{_HARDLINE_BLOCK_DEVICE}\b', "erase or discard an entire raw block device"),
     (_CMDPOS + _CMDPATH + rf'sgdisk\b[^\n]*(?:--zap-all|-Z)\b[^\n]*["\']?{_HARDLINE_BLOCK_DEVICE}\b', "erase a raw block-device partition table"),
     (_CMDPOS + _CMDPATH + rf'nvme\s+(?:format|sanitize)\b[^\n]*["\']?{_HARDLINE_BLOCK_DEVICE}\b', "destructive NVMe format/sanitize"),
-    (_CMDPOS + _CMDPATH + rf'(?:cp\b[^\n]*\s+["\']?{_HARDLINE_BLOCK_DEVICE}["\']?{_HARDLINE_POST_COMMAND_REDIRECTIONS}\s*(?:$|\n|[;|&)])|tee\b[^\n]*["\']?{_HARDLINE_BLOCK_DEVICE}\b)', "write to an entire raw block device"),
+    (_CMDPOS + _CMDPATH + rf'tee\b[^\n]*["\']?{_HARDLINE_BLOCK_DEVICE}\b', "write to an entire raw block device"),
     # Whole storage-pool / volume destruction has no ordinary recovery path.
     # A recursive ``zfs destroy`` removes an entire dataset subtree and stays
     # unconditional.  Narrow dataset/snapshot deletion belongs in the normal
@@ -738,6 +738,13 @@ def _has_destructive_raw_device_operation(command: str) -> bool:
         for index, token in enumerate(tokens):
             if skip_next:
                 skip_next = False
+                continue
+            redirection = re.fullmatch(
+                r"\d*(?:>>?|<<?|&>>?)(?P<target>.*)", token
+            )
+            if redirection:
+                if not redirection.group("target"):
+                    skip_next = True
                 continue
             if not end_options and token == "--":
                 end_options = True

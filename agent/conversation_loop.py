@@ -568,6 +568,33 @@ def _requeue_pending_internal_events(agent, events: list[str]) -> None:
             pending[:0] = events
 
 
+def _requeue_pending_steer(agent, steer: str | None) -> None:
+    """Restore a drained steer ahead of any steer that raced with rollback."""
+    if not steer:
+        return
+    lock = getattr(agent, "_pending_steer_lock", None)
+    if lock is not None:
+        with lock:
+            existing = getattr(agent, "_pending_steer", None)
+            agent._pending_steer = f"{steer}\n{existing}" if existing else steer
+        return
+    existing = getattr(agent, "_pending_steer", None)
+    agent._pending_steer = f"{steer}\n{existing}" if existing else steer
+
+
+def _rollback_pre_api_internal_projection(agent) -> None:
+    """Undo an internal-event projection that could not be made durable."""
+    projection = getattr(agent, "_pre_api_internal_projection", None)
+    if not isinstance(projection, dict):
+        return
+    target = projection.get("target")
+    if isinstance(target, dict):
+        target["content"] = projection.get("original_content", "")
+    _requeue_pending_internal_events(agent, projection.get("events") or [])
+    _requeue_pending_steer(agent, projection.get("steer"))
+    agent._pre_api_internal_projection = None
+
+
 def _close_stream_before_internal_followup(agent, final_response: str) -> None:
     """Separate an already-streamed attempted final from its resample."""
     if not agent._interim_content_was_streamed(final_response or ""):
@@ -591,6 +618,7 @@ def _inject_pending_internal_events_pre_api(agent, messages: list) -> bool:
         _requeue_pending_internal_events(agent, events)
         return False
 
+    original_content = target.get("content", "")
     payload = "\n\n".join(events)
     steer = agent._drain_pending_steer()
     if steer:
@@ -605,6 +633,13 @@ def _inject_pending_internal_events_pre_api(agent, messages: list) -> bool:
         blocks = list(content) if isinstance(content, list) else []
         blocks.append({"type": "text", "text": marker.lstrip()})
         target["content"] = blocks
+
+    agent._pre_api_internal_projection = {
+        "target": target,
+        "original_content": original_content,
+        "events": events,
+        "steer": steer,
+    }
 
     # This boundary can race after the tool row was incrementally written.
     # Append-only session flushing deliberately skips stamped rows, so update
@@ -2189,6 +2224,14 @@ def run_conversation(
         if _inject_pending_internal_events_pre_api(agent, messages):
             agent._persist_session(messages, conversation_history)
 
+        if getattr(agent, "_incremental_persistence_failed", False):
+            _rollback_pre_api_internal_projection(agent)
+            _turn_exit_reason = "session_persistence_failed"
+            final_response = ""
+            failed = True
+            break
+        agent._pre_api_internal_projection = None
+
         # ── Pre-API-call /steer drain ──────────────────────────────────
         # If a /steer arrived during the previous API call (while the model
         # was thinking), drain it now — before we build api_messages — so
@@ -2206,6 +2249,12 @@ def run_conversation(
             messages,
             conversation_history=conversation_history,
         )
+
+        if getattr(agent, "_incremental_persistence_failed", False):
+            _turn_exit_reason = "session_persistence_failed"
+            final_response = ""
+            failed = True
+            break
 
         # ── Wall-clock run-budget wrap-up notice ───────────────────────
         # One-shot: when a run budget (agent.run_budget_seconds /
