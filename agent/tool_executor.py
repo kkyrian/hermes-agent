@@ -226,6 +226,8 @@ def _finalize_tool_result_batch(
                         "post_tool_context spill handling failed",
                         exc_info=True,
                     )
+                if spill_required and "mandatory spill failed" in context:
+                    message["_mandatory_spill_failure"] = True
                 if isinstance(content, str):
                     message["content"] = content + "\n\n" + context
                 else:
@@ -241,6 +243,8 @@ def _finalize_tool_result_batch(
 
 def _persist_final_tool_result_batch(agent, tool_messages: list[dict]) -> None:
     """Backfill finalized tool rows so durable replay matches provider input."""
+    for message in tool_messages:
+        message.pop("_mandatory_spill_failure", None)
     session_db = getattr(agent, "_session_db", None)
     session_id = getattr(agent, "session_id", None)
     if session_db is None or not session_id:
@@ -377,6 +381,11 @@ def _rebudget_tool_bases_preserving_suffixes(
     suffixes: list[dict | None] = []
     authority_size = 0
     original_contents = [message.get("content", "") for message in tool_messages]
+    mandatory_spill_failures = {
+        index
+        for index, message in enumerate(tool_messages)
+        if message.pop("_mandatory_spill_failure", False)
+    }
     for base, authority, final in zip(
         base_contents, authority_contents, original_contents
     ):
@@ -424,32 +433,36 @@ def _rebudget_tool_bases_preserving_suffixes(
             "tool_call_id": message.get("tool_call_id", f"base_{index}"),
             "content": _text_content(base),
         })
-    base_evidence_size = sum(len(item["content"]) for item in base_messages)
-    preserve_budget_evidence = (
-        base_evidence_size > base_budget
-        and any(
+    def _has_budget_evidence(item: dict) -> bool:
+        return (
             "<persisted-output>" in item["content"]
             or "Truncated:" in item["content"]
-            for item in base_messages
         )
+
+    budgetable_base_messages = [
+        item for item in base_messages if not _has_budget_evidence(item)
+    ]
+    preserved_base_size = sum(
+        len(item["content"]) for item in base_messages if _has_budget_evidence(item)
     )
-    if base_messages and not preserve_budget_evidence:
+    budgetable_base_budget = max(0, base_budget - preserved_base_size)
+    if budgetable_base_messages:
         enforce_turn_budget(
-            base_messages,
+            budgetable_base_messages,
             env=env,
             config=BudgetConfig(
                 default_result_size=budget.default_result_size,
-                turn_budget=base_budget,
+                turn_budget=budgetable_base_budget,
                 preview_size=min(
                     budget.preview_size,
-                    max(0, base_budget // max(1, len(base_messages))),
+                    max(0, budgetable_base_budget // max(1, len(budgetable_base_messages))),
                 ),
                 tool_overrides=budget.tool_overrides,
             ),
         )
         _cap_messages(
-            base_messages,
-            base_budget,
+            budgetable_base_messages,
+            budgetable_base_budget,
             "[Tool output truncated by aggregate turn budget.]",
         )
     base_size = sum(len(item["content"]) for item in base_messages)
@@ -469,28 +482,37 @@ def _rebudget_tool_bases_preserving_suffixes(
                     if suffix["kind"] == "text"
                     else _text_content(suffix["hook"])
                 ),
+                "preserve": index in mandatory_spill_failures,
             }
         )
     hook_budget = max(0, budget.turn_budget - authority_size - base_size)
-    if hook_messages:
+    budgetable_hook_messages = [
+        item for item in hook_messages if not item["preserve"]
+    ]
+    preserved_hook_size = sum(
+        len(item["content"]) for item in hook_messages if item["preserve"]
+    )
+    budgetable_hook_budget = max(0, hook_budget - preserved_hook_size)
+    if budgetable_hook_messages:
         enforce_turn_budget(
-            hook_messages,
+            budgetable_hook_messages,
             env=env,
             config=BudgetConfig(
                 default_result_size=budget.default_result_size,
-                turn_budget=hook_budget,
+                turn_budget=budgetable_hook_budget,
                 preview_size=min(
                     budget.preview_size,
-                    max(0, hook_budget // max(1, len(hook_messages))),
+                    max(0, budgetable_hook_budget // max(1, len(budgetable_hook_messages))),
                 ),
                 tool_overrides=budget.tool_overrides,
             ),
         )
         _cap_messages(
-            hook_messages,
-            hook_budget,
+            budgetable_hook_messages,
+            budgetable_hook_budget,
             "[Post-tool context truncated by aggregate turn budget.]",
         )
+    if hook_messages:
         for index, item in zip(hook_indexes, hook_messages):
             suffix = suffixes[index]
             suffix["hook"] = (

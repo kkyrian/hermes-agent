@@ -2058,6 +2058,14 @@ def run_conversation(
     _last_preflight_pressure: Optional[int] = None
     _preflight_compression_blocked = _ctx.preflight_compression_blocked
     _turn_exit_reason = "unknown"  # Diagnostic: why the loop ended
+    if _ctx.persistence_failed:
+        agent._incremental_persistence_failed = True
+        agent._last_persistence_error_cause = (
+            _ctx.persistence_error_cause or "unknown"
+        )
+        failed = True
+        final_response = ""
+        _turn_exit_reason = "session_persistence_failed"
     # Last composed answer intentionally held back by a verification gate. If
     # that continuation consumes the remaining budget, this is the best
     # user-facing result available; it must not be confused with error or
@@ -2103,7 +2111,7 @@ def run_conversation(
         )
 
     agent._open_internal_event_mailbox()
-    while (api_call_count < agent.max_iterations and agent.iteration_budget.remaining > 0) or agent._budget_grace_call:
+    while not failed and ((api_call_count < agent.max_iterations and agent.iteration_budget.remaining > 0) or agent._budget_grace_call):
         _redirect_text = agent._drain_pending_redirect()
         if _redirect_text:
             _apply_active_turn_redirect(agent, messages, _redirect_text)

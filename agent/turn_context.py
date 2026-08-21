@@ -427,6 +427,9 @@ class TurnContext:
     ext_prefetch_cache: str = ""
     # Turn-start preflight already proved an immediate retry ineffective.
     preflight_compression_blocked: bool = False
+    # A guarded in-place backfill could not make provider-visible bytes durable.
+    persistence_failed: bool = False
+    persistence_error_cause: str | None = None
 
 
 def build_turn_context(
@@ -456,6 +459,8 @@ def build_turn_context(
     ``conversation_loop`` module are passed in explicitly to keep this module
     free of an import cycle with ``agent.conversation_loop``.
     """
+    persistence_failed = False
+    persistence_error_cause: str | None = None
     # Guard stdio against OSError from broken pipes (systemd/headless/daemon).
     install_safe_stdio()
 
@@ -1375,12 +1380,27 @@ def build_turn_context(
         _db = getattr(agent, "_session_db", None)
         if _db is not None:
             try:
-                _db.set_latest_user_content(
+                updated = _db.set_latest_user_content(
                     agent.session_id,
                     _multimodal_content_before_notes,
                     _plugin_turn_content,
                 )
-            except Exception:
+                if updated != 1:
+                    persistence_failed = True
+                    persistence_error_cause = "unknown"
+                    logger.warning(
+                        "in-place compaction multimodal content backfill matched "
+                        "no row for session=%s",
+                        agent.session_id or "none",
+                    )
+            except Exception as exc:
+                persistence_failed = True
+                try:
+                    from hermes_state import classify_persistence_error
+
+                    persistence_error_cause = classify_persistence_error(exc)
+                except Exception:
+                    persistence_error_cause = "unknown"
                 logger.warning(
                     "in-place compaction multimodal content backfill failed "
                     "for session=%s",
@@ -1482,12 +1502,27 @@ def build_turn_context(
                 _db = getattr(agent, "_session_db", None)
                 if _db is not None:
                     try:
-                        _db.set_latest_user_api_content(
+                        updated = _db.set_latest_user_api_content(
                             agent.session_id,
                             _turn_user_msg.get("content"),
                             _api_content,
                         )
-                    except Exception:
+                        if updated != 1:
+                            persistence_failed = True
+                            persistence_error_cause = "unknown"
+                            logger.warning(
+                                "in-place compaction api_content backfill matched "
+                                "no row for session=%s",
+                                agent.session_id or "none",
+                            )
+                    except Exception as exc:
+                        persistence_failed = True
+                        try:
+                            from hermes_state import classify_persistence_error
+
+                            persistence_error_cause = classify_persistence_error(exc)
+                        except Exception:
+                            persistence_error_cause = "unknown"
                         logger.warning(
                             "in-place compaction api_content backfill failed "
                             "for session=%s",
@@ -1548,4 +1583,6 @@ def build_turn_context(
         plugin_user_context=plugin_user_context,
         ext_prefetch_cache=ext_prefetch_cache,
         preflight_compression_blocked=_preflight_compression_blocked,
+        persistence_failed=persistence_failed,
+        persistence_error_cause=persistence_error_cause,
     )

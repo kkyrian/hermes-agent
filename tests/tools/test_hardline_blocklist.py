@@ -118,6 +118,8 @@ _HARDLINE_BLOCK = [
     "/sbin/mkfs.ext4 /dev/sda",
     "cat <<<EOF\necho x > /dev/sda",
     "bash -c 'echo x > /dev/sda'",
+    "find /tmp -exec sh -c 'echo x > /dev/sda' \\;",
+    "printf '%s\\n' item | xargs sh -c 'echo x > /dev/sda'",
     "nice wipefs -a /dev/sda",
     "ionice -c 3 zpool destroy tank",
     "find \"$HOME/..\" -depth -delete",
