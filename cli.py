@@ -12935,6 +12935,14 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             if message in remaining:
                 remaining.remove(message)
                 self._pending_input.put(message)
+                try:
+                    release_event_delivery(event, claim)
+                except Exception:
+                    logging.debug(
+                        "could not release queued CLI completion claim",
+                        exc_info=True,
+                    )
+                continue
             elif turn_failed:
                 try:
                     release_event_delivery(event, claim)

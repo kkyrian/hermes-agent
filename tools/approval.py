@@ -999,24 +999,48 @@ def _has_unquoted_raw_device_redirection(command: str) -> bool:
 
 
 def _strip_heredoc_bodies_for_detection(command: str) -> str:
-    """Blank heredoc data while retaining the command line that introduced it."""
+    """Blank heredoc data but retain executable substitutions when expanded."""
     output = []
-    pending: list[tuple[str, bool]] = []
-    active: tuple[str, bool] | None = None
+    pending: list[tuple[str, bool, bool]] = []
+    active: tuple[str, bool, bool] | None = None
     heredoc_re = re.compile(r"(?<!<)<<(?!<)(?P<tabs>-)?\s*(?P<quote>['\"]?)(?P<word>[A-Za-z0-9_]+)(?P=quote)")
     for line in command.splitlines(keepends=True):
         if active is not None:
-            delimiter, strip_tabs = active
+            delimiter, strip_tabs, expands = active
             candidate = line.rstrip("\r\n")
             if strip_tabs:
                 candidate = candidate.lstrip("\t")
-            output.append("\n" if line.endswith(("\n", "\r")) else "")
             if candidate == delimiter:
+                output.append("\n" if line.endswith(("\n", "\r")) else "")
                 active = pending.pop(0) if pending else None
+                continue
+            if expands:
+                index = 0
+                substitutions = []
+                while index < len(candidate):
+                    if candidate.startswith("$(", index):
+                        end = _scan_dollar_paren_end(candidate, index)
+                        if end is not None:
+                            substitutions.append(candidate[index:end])
+                            index = end
+                            continue
+                    if candidate[index] == "`":
+                        end = _scan_backtick_end(candidate, index)
+                        if end is not None:
+                            substitutions.append(candidate[index:end])
+                            index = end
+                            continue
+                    index += 1
+                output.append(" ".join(substitutions))
+            output.append("\n" if line.endswith(("\n", "\r")) else "")
             continue
         output.append(line)
         for match in heredoc_re.finditer(line):
-            pending.append((match.group("word"), bool(match.group("tabs"))))
+            pending.append((
+                match.group("word"),
+                bool(match.group("tabs")),
+                not bool(match.group("quote")),
+            ))
         if pending:
             active = pending.pop(0)
     return "".join(output)

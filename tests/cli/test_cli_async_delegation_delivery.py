@@ -114,6 +114,7 @@ def test_cli_completion_leftover_is_requeued_before_acknowledgement(monkeypatch)
             return [(event, "leftover completion")]
 
     completed = []
+    released = []
     monkeypatch.setattr("tools.process_registry.process_registry", FakeRegistry())
     monkeypatch.setattr(
         "tools.async_delegation.claim_event_delivery",
@@ -123,6 +124,10 @@ def test_cli_completion_leftover_is_requeued_before_acknowledgement(monkeypatch)
         "tools.async_delegation.complete_event_delivery",
         lambda evt, token: completed.append((evt, token)),
     )
+    monkeypatch.setattr(
+        "tools.async_delegation.release_event_delivery",
+        lambda evt, token: released.append((evt, token)),
+    )
 
     cli._drain_process_notifications("cli-active")
     result = {"pending_internal_events": ["leftover completion"]}
@@ -130,7 +135,8 @@ def test_cli_completion_leftover_is_requeued_before_acknowledgement(monkeypatch)
 
     assert cli._pending_input.get_nowait() == "leftover completion"
     assert "pending_internal_events" not in result
-    assert completed == [(event, "leftover-claim")]
+    assert completed == []
+    assert released == [(event, "leftover-claim")]
 
 
 def test_cli_completion_claim_is_released_when_turn_has_no_result(monkeypatch):
@@ -165,15 +171,21 @@ def test_cli_failed_turn_harvests_completion_before_acknowledgement(monkeypatch)
         "completion payload"
     ]
     completed = []
+    released = []
     monkeypatch.setattr(
         "tools.async_delegation.complete_event_delivery",
         lambda evt, token: completed.append((evt, token)),
+    )
+    monkeypatch.setattr(
+        "tools.async_delegation.release_event_delivery",
+        lambda evt, token: released.append((evt, token)),
     )
 
     cli._settle_admitted_process_notifications({"error": "provider failed"})
 
     assert cli._pending_input.get_nowait() == "completion payload"
-    assert completed == [(event, "failed-claim")]
+    assert completed == []
+    assert released == [(event, "failed-claim")]
 
 
 def test_cli_failed_turn_releases_unharvested_completion_claim(monkeypatch):
