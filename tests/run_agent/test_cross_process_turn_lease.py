@@ -231,6 +231,34 @@ def test_run_conversation_lease_timeout_returns_resend_notice(monkeypatch):
     )
 
 
+def test_lease_timeout_closes_mailbox_and_returns_waiting_completion(monkeypatch):
+    db = _DB()
+    agent = _agent_with_db(db)
+    agent._pending_internal_events = []
+    agent._pending_internal_events_lock = threading.Lock()
+    agent._internal_event_mailbox_open = False
+    agent._open_internal_event_mailbox()
+
+    def acquire_with_completion(session_id, holder, **kwargs):
+        db.events.append(("acquire", session_id, holder))
+        assert agent.enqueue_internal_event("completion while waiting")
+        return False
+
+    db.acquire_session_turn_lease = acquire_with_completion
+    monkeypatch.setattr(
+        "agent.conversation_loop.run_conversation",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("turn must not start without a lease")
+        ),
+    )
+
+    result = AIAgent.run_conversation(agent, "new message", conversation_history=[])
+
+    assert result["failed"] is True
+    assert result["pending_internal_events"] == ["completion while waiting"]
+    assert agent.enqueue_internal_event("too late") is False
+
+
 def test_run_conversation_lease_wait_honors_interrupt(monkeypatch):
     db = _DB()
     agent = _agent_with_db(db)

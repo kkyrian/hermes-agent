@@ -8802,7 +8802,14 @@ class AIAgent:
                         except Exception:
                             self._interrupt_requested = False
                             self._interrupt_message = None
-                        return interrupt_result
+                        finalized = self._finalize_internal_event_mailbox(
+                            interrupt_result
+                        )
+                        return (
+                            finalized
+                            if isinstance(finalized, dict)
+                            else interrupt_result
+                        )
                     # Fail closed like gateway TurnLeaseTimeoutError: do not
                     # enter load/run/flush, and surface a resend notice instead
                     # of a bare TimeoutError that looks like a hang.
@@ -8823,7 +8830,7 @@ class AIAgent:
                             exc_info=True,
                         )
                     relay_outcome = "timed_out"
-                    return {
+                    timeout_result = {
                         "final_response": timeout_msg,
                         "messages": list(conversation_history or []),
                         "api_calls": 0,
@@ -8831,6 +8838,10 @@ class AIAgent:
                         "failed": True,
                         "error": f"session_turn_lease_timeout:{session_id}",
                     }
+                    finalized = self._finalize_internal_event_mailbox(timeout_result)
+                    return (
+                        finalized if isinstance(finalized, dict) else timeout_result
+                    )
 
                 # Assign only after admission so finally release cannot target a
                 # holder string that never owned the row. Persist paths read
