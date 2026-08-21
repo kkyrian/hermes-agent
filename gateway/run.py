@@ -3737,7 +3737,11 @@ async def _renew_deferred_completion_claim(
             ]
         if record is None:
             return
-        for active_delegation_id, active_claim_id in claims:
+        lost_claims = set(record.get("lost_renewal_claims", ()))
+        renewable_claims = [claim for claim in claims if claim not in lost_claims]
+        if not renewable_claims:
+            return
+        for active_delegation_id, active_claim_id in renewable_claims:
             if not active_delegation_id or not active_claim_id:
                 continue
             if not renew_completion_delivery(active_delegation_id, active_claim_id):
@@ -3745,7 +3749,10 @@ async def _renew_deferred_completion_claim(
                     "Lost durable completion claim while parent remained active: %s",
                     active_delegation_id,
                 )
-                return
+                with lock:
+                    record.setdefault("lost_renewal_claims", set()).add(
+                        (active_delegation_id, active_claim_id)
+                    )
 
 
 def _attach_deferred_completion_siblings(

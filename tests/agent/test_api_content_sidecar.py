@@ -672,6 +672,7 @@ class TestPrologueMoaAndInPlaceBackfill:
         agent = _FakeAgent()
         agent.compression_enabled = True
         agent._session_db = MagicMock()
+        agent._session_db.set_latest_user_api_content.return_value = 1
 
         calls = {"n": 0}
 
@@ -727,6 +728,7 @@ class TestPrologueMoaAndInPlaceBackfill:
         agent = _FakeAgent()
         agent.compression_enabled = True
         agent._session_db = MagicMock()
+        agent._session_db.set_latest_user_content.return_value = 1
         calls = {"n": 0}
 
         def _should_compress(_tokens):
@@ -782,6 +784,45 @@ class TestPrologueMoaAndInPlaceBackfill:
             expected_before,
             final_content,
         )
+
+    def test_zero_row_multimodal_backfill_is_reported_as_persistence_failure(self):
+        agent = _FakeAgent()
+        agent.compression_enabled = True
+        agent._session_db = MagicMock()
+        agent._session_db.set_latest_user_content.return_value = 0
+        agent.context_compressor = types.SimpleNamespace(
+            protect_first_n=0,
+            protect_last_n=0,
+            threshold_tokens=1,
+            context_length=1000,
+            last_prompt_tokens=-1,
+            should_compress=lambda _tokens: True,
+            should_defer_preflight_to_real_usage=lambda _t: False,
+            get_active_compression_failure_cooldown=lambda: None,
+        )
+
+        def _compress(messages, _system, approx_tokens=None, task_id=None):
+            agent._last_compaction_in_place = True
+            return ([{"role": "assistant", "content": "summary"}, dict(messages[-1])], "SYSTEM")
+
+        agent._compress_context = _compress
+        original = [{"type": "text", "text": "inspect this"}]
+        history = [
+            {"role": "user", "content": "x" * 4000},
+            {"role": "assistant", "content": "x" * 4000},
+        ]
+        with patch(
+            "hermes_cli.plugins.invoke_hook", return_value=[{"context": "PLUGIN-CTX"}]
+        ), patch("hermes_cli.plugins.has_hook", return_value=True):
+            ctx = _build(
+                agent,
+                user_message=original,
+                conversation_history=history,
+                summarize_user_message_for_log=lambda value: str(value),
+            )
+
+        assert ctx.persistence_failed is True
+        assert ctx.persistence_error_cause == "unknown"
 
 
 class TestSetLatestUserApiContent:

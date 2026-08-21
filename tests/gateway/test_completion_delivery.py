@@ -591,6 +591,45 @@ def test_deferred_claim_renews_attached_siblings(monkeypatch):
     ]
 
 
+def test_lost_primary_claim_does_not_stop_sibling_renewal(monkeypatch):
+    from tools import async_delegation
+
+    runner = _runner(SimpleNamespace(handle_message=AsyncMock()))
+    session_key = "agent:main:telegram:dm:12345:678"
+    sibling = _async_event("deleg_sibling")
+    record = {
+        "delegation_id": "deleg_primary",
+        "claim_id": "claim-primary",
+        "renewal_delegation_id": "deleg_primary",
+        "renewal_claim_id": "claim-primary",
+        "siblings": [(sibling, "claim-sibling")],
+    }
+    runner._deferred_completion_deliveries = {session_key: [record]}
+    renewals = []
+
+    def _renew(delegation_id, claim_id):
+        renewals.append((delegation_id, claim_id))
+        return delegation_id != "deleg_primary"
+
+    monkeypatch.setattr(async_delegation, "renew_completion_delivery", _renew)
+
+    async def _one_cycle(_delay):
+        if ("deleg_sibling", "claim-sibling") in renewals:
+            runner._deferred_completion_deliveries[session_key].clear()
+
+    monkeypatch.setattr(asyncio, "sleep", _one_cycle)
+    asyncio.run(
+        _renew_deferred_completion_claim(
+            runner, session_key, "deleg_primary", "claim-primary"
+        )
+    )
+
+    assert renewals == [
+        ("deleg_primary", "claim-primary"),
+        ("deleg_sibling", "claim-sibling"),
+    ]
+
+
 def test_settlement_preserves_record_deferred_during_async_classification(monkeypatch):
     runner = _runner(SimpleNamespace(handle_message=AsyncMock()))
     session_key = "agent:main:telegram:dm:12345:678"

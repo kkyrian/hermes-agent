@@ -198,6 +198,104 @@ def test_hook_suffixes_spill_or_truncate_before_small_turn_budget(tmp_path):
     assert len(content) <= 120
 
 
+def test_evidence_in_one_result_does_not_exempt_other_results_from_rebudgeting():
+    agent = SimpleNamespace(
+        session_id=None,
+        _session_db=None,
+        _current_turn_id="turn-mixed-evidence",
+        _apply_pending_internal_events_to_tool_results=lambda messages, _count: (
+            messages[-1].__setitem__("content", messages[-1]["content"] + "\n\n" + "A" * 180)
+        ),
+        _apply_pending_steer_to_tool_results=lambda *_args: None,
+    )
+    evidence = "<persisted-output>durable path</persisted-output>"
+    messages = [
+        {"role": "tool", "tool_call_id": "call-1", "content": evidence},
+        {"role": "tool", "tool_call_id": "call-2", "content": "x" * 140},
+    ]
+    _finalize_tool_boundary(
+        agent,
+        messages,
+        messages,
+        [_tool_call("terminal", "call-1"), _tool_call("terminal", "call-2")],
+        effective_task_id="task-mixed-evidence",
+        api_call_count=1,
+        budget=BudgetConfig(turn_budget=220, preview_size=40),
+    )
+
+    assert messages[0]["content"] == evidence
+    assert "x" * 100 not in messages[1]["content"]
+    assert messages[1]["content"].endswith("A" * 180)
+
+
+def test_mandatory_spill_failure_survives_final_small_budget():
+    agent = SimpleNamespace(
+        session_id=None,
+        _session_db=None,
+        _current_turn_id="turn-mandatory-failure-budget",
+        _apply_pending_steer_to_tool_results=lambda *_args: None,
+    )
+    context = "HEAD-" + "x" * 500 + "-UNIQUE-MIDDLE-" + "y" * 500 + "-TAIL"
+    messages = [{"role": "tool", "tool_call_id": "call-1", "content": "base"}]
+    with (
+        patch("hermes_cli.lifecycle.has_hook", return_value=True),
+        patch(
+            "hermes_cli.lifecycle.invoke_hook",
+            return_value=[{
+                "context": context,
+                "spill_required": True,
+                "spill_failure_action": "Spill failed.",
+            }],
+        ),
+        patch(
+            "tools.hook_output_spill.write_spill_file",
+            return_value={"ok": False, "path": None, "error": "ENOSPC"},
+        ),
+    ):
+        _finalize_tool_boundary(
+            agent,
+            messages,
+            messages,
+            [_tool_call("terminal", "call-1")],
+            effective_task_id="task-mandatory-failure-budget",
+            api_call_count=1,
+            budget=BudgetConfig(turn_budget=80, preview_size=20),
+        )
+
+    assert "mandatory spill failed" in messages[0]["content"]
+    assert context in messages[0]["content"]
+    assert "Spill failed." in messages[0]["content"]
+
+
+def test_untrusted_failure_phrase_does_not_bypass_hook_budget():
+    agent = SimpleNamespace(
+        session_id=None,
+        _session_db=None,
+        _current_turn_id="turn-untrusted-failure-phrase",
+        _apply_pending_steer_to_tool_results=lambda *_args: None,
+    )
+    messages = [{"role": "tool", "tool_call_id": "call-1", "content": "base"}]
+    with (
+        patch("hermes_cli.lifecycle.has_hook", return_value=True),
+        patch(
+            "hermes_cli.lifecycle.invoke_hook",
+            return_value=[{"context": "mandatory spill failed " + "x" * 1_000}],
+        ),
+    ):
+        _finalize_tool_boundary(
+            agent,
+            messages,
+            messages,
+            [_tool_call("terminal", "call-1")],
+            effective_task_id="task-untrusted-failure-phrase",
+            api_call_count=1,
+            budget=BudgetConfig(turn_budget=100, preview_size=20),
+        )
+
+    assert "x" * 500 not in messages[0]["content"]
+    assert "_mandatory_spill_failure" not in messages[0]
+
+
 def test_post_tool_context_appends_to_multimodal_result(tmp_path):
     db = SessionDB(db_path=tmp_path / "state.db")
     session_id = "multimodal-context"

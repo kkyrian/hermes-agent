@@ -761,6 +761,8 @@ class TestExpandedHardlineFloor:
             "dd if=/dev/zero of=/tmp/disk.img",
             'echo \'dd if=/dev/zero of="/dev/sda"\'',
             'printf "%s" "/sbin/reboot"',
+            "find /tmp -exec echo sh -c 'echo x > /dev/sda' \\;",
+            "printf item | xargs echo sh -c 'echo x > /dev/sda'",
         ),
     )
     def test_recoverable_or_read_only_neighbors_are_not_hardline(self, command):

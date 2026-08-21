@@ -2227,6 +2227,51 @@ def _execution_flag_findings(command: str):
                     yield (f"arbitrary program execution via {tool} {option}", payload)
 
 
+def _embedded_shell_payloads(command: str):
+    """Yield shell ``-c`` payloads executed by find/xargs command arguments."""
+    xargs_options_with_arg = {
+        "-a", "--arg-file", "-d", "--delimiter", "-E", "--eof",
+        "-I", "--replace", "-L", "--max-lines", "-n", "--max-args",
+        "-P", "--max-procs", "-s", "--max-chars",
+    }
+    for segment in _iter_top_level_shell_segments(command):
+        for start, _, word in _iter_shell_command_word_spans(segment):
+            executable = os.path.basename(
+                _deobfuscate_shell_word_for_detection(word)
+            ).lower()
+            if executable not in {"find", "xargs"}:
+                continue
+            tokens = _shell_segment_tokens(segment, start)
+            if not tokens:
+                continue
+            candidates: list[list[str]] = []
+            if executable == "find":
+                for index, token in enumerate(tokens[1:], start=1):
+                    if token.lower() in {"-exec", "-execdir", "-ok", "-okdir"}:
+                        candidates.append(tokens[index + 1:])
+            else:
+                args = tokens[1:]
+                index = 0
+                while index < len(args):
+                    token = args[index]
+                    if token == "--":
+                        index += 1
+                        break
+                    if not token.startswith("-") or token == "-":
+                        break
+                    option = token.split("=", 1)[0]
+                    index += 2 if option in xargs_options_with_arg and "=" not in token else 1
+                candidates.append(args[index:])
+            for candidate in candidates:
+                if not candidate or os.path.basename(candidate[0]).lower() not in {
+                    "bash", "sh", "zsh", "ksh",
+                }:
+                    continue
+                found, payload = _bash_exec_payload(candidate[1:])
+                if found and payload:
+                    yield payload
+
+
 def _skip_shell_whitespace(command: str, pos: int) -> int:
     while pos < len(command) and command[pos].isspace():
         pos += 1
@@ -2689,6 +2734,15 @@ def _command_detection_variants(command: str):
                     seen.add(marked_payload)
                     yield marked_payload
                 pending.append(payload)
+    for payload in _embedded_shell_payloads(normalized):
+        if payload in seen:
+            continue
+        seen.add(payload)
+        yield payload
+        marked_payload = _mark_command_starts(payload)
+        if marked_payload != payload and marked_payload not in seen:
+            seen.add(marked_payload)
+            yield marked_payload
     # Subshell `(cmd)` and brace-group `{ cmd; }` openers put `cmd` at a real
     # command position, but the flat `_CMDPOS`-anchored patterns can't see it:
     # their start-position class deliberately omits `(`/`{` because a bare
