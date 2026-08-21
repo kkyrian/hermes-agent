@@ -518,7 +518,8 @@ _RM_FLAG_PREFIX = _CMDPOS + _CMDPATH + r'rm\s+(-[^\s]*\s+)*'
 _HARDLINE_BLOCK_DEVICE = (
     r'/dev/(?:sd[a-z][a-z0-9]*|hd[a-z][a-z0-9]*|vd[a-z][a-z0-9]*|'
     r'xvd[a-z][a-z0-9]*|mmcblk\d+(?:p\d+)?|nvme\d+(?:n\d+(?:p\d+)?)?|'
-    r'dm-\d+|mapper/[a-z0-9_.+:-]+|disk/by-(?:id|path|uuid|partuuid|label|partlabel)/'
+    r'md\d+(?:p\d+)?|dm-\d+|mapper/[a-z0-9_.+:-]+|zvol/[a-z0-9_.+:/@-]+|'
+    r'disk/by-(?:id|path|uuid|partuuid|label|partlabel)/'
     r'[a-z0-9_.+:@-]+)'
 )
 _HARDLINE_POST_COMMAND_REDIRECTIONS = (
@@ -559,8 +560,6 @@ HARDLINE_PATTERNS = [
     (_CMDPOS + _CMDPATH + rf'sgdisk\b[^\n]*(?:--zap-all|-Z)\b[^\n]*["\']?{_HARDLINE_BLOCK_DEVICE}\b', "erase a raw block-device partition table"),
     (_CMDPOS + _CMDPATH + rf'nvme\s+(?:format|sanitize)\b[^\n]*["\']?{_HARDLINE_BLOCK_DEVICE}\b', "destructive NVMe format/sanitize"),
     (_CMDPOS + _CMDPATH + rf'(?:cp\b[^\n]*\s+["\']?{_HARDLINE_BLOCK_DEVICE}["\']?{_HARDLINE_POST_COMMAND_REDIRECTIONS}\s*(?:$|\n|[;|&)])|tee\b[^\n]*["\']?{_HARDLINE_BLOCK_DEVICE}\b)', "write to an entire raw block device"),
-    # Non-rm spellings of the same unrecoverable recursive deletion floor.
-    (_CMDPOS + _CMDPATH + r'find\s+' + _HARDLINE_FIND_LEADING_OPTIONS + _HARDLINE_FIND_PATH + r'[^\n]*-delete\b', "recursive find deletion of root/system/home"),
     # Whole storage-pool / volume destruction has no ordinary recovery path.
     # A recursive ``zfs destroy`` removes an entire dataset subtree and stays
     # unconditional.  Narrow dataset/snapshot deletion belongs in the normal
@@ -596,7 +595,7 @@ _HARDLINE_FIND_CANDIDATE_RE = re.compile(
     _CMDPOS
     + _CMDPATH
     + r'find\s+'
-    + r'(?P<args>[^\n;|&]*?)-delete\b',
+    + r'(?P<args>[^\n;|&]*)',
     _RE_FLAGS,
 )
 _HARDLINE_WIPEFS_CANDIDATE_RE = re.compile(
@@ -655,9 +654,10 @@ def _has_destructive_raw_device_operation(command: str) -> bool:
             continue
 
         operands: list[str] = []
+        target_directory = ""
         skip_next = False
         end_options = False
-        for token in tokens:
+        for index, token in enumerate(tokens):
             if skip_next:
                 skip_next = False
                 continue
@@ -666,12 +666,23 @@ def _has_destructive_raw_device_operation(command: str) -> bool:
                 continue
             if not end_options and token.startswith("-"):
                 option = token.split("=", 1)[0]
-                if "=" not in token and option in {
-                    "-t", "--target-directory", "-S", "--suffix",
-                }:
+                if option in {"-t", "--target-directory"}:
+                    if "=" in token:
+                        target_directory = token.split("=", 1)[1]
+                    elif index + 1 < len(tokens):
+                        target_directory = tokens[index + 1]
+                        skip_next = True
+                    continue
+                if "=" not in token and option in {"-S", "--suffix"}:
                     skip_next = True
                 continue
             operands.append(token)
+        if target_directory:
+            for source in operands:
+                target = posixpath.join(target_directory, posixpath.basename(source))
+                if re.fullmatch(_HARDLINE_BLOCK_DEVICE, target, re.IGNORECASE):
+                    return True
+            continue
         if len(operands) >= 2 and re.fullmatch(
             _HARDLINE_BLOCK_DEVICE, operands[-1], re.IGNORECASE
         ):
@@ -689,18 +700,60 @@ def _has_lexically_protected_find_delete(command: str) -> bool:
         index = 0
         while index < len(tokens):
             token = tokens[index]
-            if token in {"-H", "-L", "-P", "--"} or token.startswith("-O"):
+            token_lower = token.lower()
+            if token_lower in {"-h", "-l", "-p", "--"} or token_lower.startswith("-o"):
                 index += 1
                 continue
-            if token == "-D" and index + 1 < len(tokens):
+            if token_lower == "-d" and index + 1 < len(tokens):
                 index += 2
                 continue
             break
-        for path in tokens[index:]:
+        paths = []
+        while index < len(tokens):
+            path = tokens[index]
             if path.startswith("-") or path in {"!", "("}:
                 break
+            paths.append(path)
+            index += 1
+
+        one_arg_predicates = {
+            "-name", "-iname", "-path", "-ipath", "-regex", "-iregex",
+            "-wholename", "-lname", "-ilname", "-user", "-group", "-uid",
+            "-gid", "-perm", "-size", "-type", "-xtype", "-links", "-inum",
+            "-fstype", "-context", "-printf", "-fprint", "-fls",
+        }
+        has_delete_action = False
+        while index < len(tokens):
+            token = tokens[index]
+            token_lower = token.lower()
+            if token_lower == "-delete":
+                has_delete_action = True
+                break
+            if token_lower in one_arg_predicates:
+                index += 2
+                continue
+            if token_lower == "-fprintf":
+                index += 3
+                continue
+            if token_lower in {"-exec", "-execdir", "-ok", "-okdir"}:
+                index += 1
+                while index < len(tokens) and tokens[index] not in {";", "+"}:
+                    index += 1
+            index += 1
+        if not has_delete_action:
+            continue
+
+        for path in paths:
             if _is_protected_find_path(path):
                 return True
+            glob_index = min(
+                (path.find(char) for char in "*?[{" if char in path),
+                default=-1,
+            )
+            if glob_index >= 0:
+                static_prefix = path[:glob_index].rstrip("/") or "/"
+                if _is_protected_find_path(static_prefix):
+                    return True
     return False
 
 

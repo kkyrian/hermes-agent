@@ -121,7 +121,15 @@ _HARDLINE_BLOCK = [
     "nice wipefs -a /dev/sda",
     "ionice -c 3 zpool destroy tank",
     "find \"$HOME/..\" -depth -delete",
+    "find /etc/?* -delete",
+    "find /etc/[a-z]* -delete",
+    "find /etc/{apt,ssh} -delete",
+    "find /home/[^x]* -delete",
     "cp image.raw /dev/sda -f",
+    "cp -t /dev /tmp/sda",
+    "cp --target-directory=/dev /tmp/sda",
+    "wipefs -af /dev/md0",
+    "cp image.raw /dev/zvol/tank/volume",
     "sgdisk /dev/sda --zap-all",
     "echo \"$(echo x > /dev/sda)\"",
     # Compound / subshell variants
@@ -202,6 +210,8 @@ _HARDLINE_ALLOW = [
     "echo 'halt and catch fire'",
     "python3 -c 'print(\"shutdown\")'",
     "find . -name '*reboot*'",
+    "find /etc -name '-delete'",
+    "find /etc -exec echo -delete ';'",
     # Word-boundary protection
     "mkfs_helper --version",
     # systemctl non-destructive verbs
