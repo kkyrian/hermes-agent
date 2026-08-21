@@ -6291,7 +6291,6 @@ class BasePlatformAdapter(ABC):
         # Track delivery outcomes for the processing-complete hook
         delivery_attempted = False
         delivery_succeeded = False
-        response = None
 
         def _record_delivery(result):
             nonlocal delivery_attempted, delivery_succeeded
@@ -7018,8 +7017,6 @@ class BasePlatformAdapter(ABC):
                 current_task = asyncio.current_task()
                 if current_task is not None and self._session_tasks.get(session_key) is current_task:
                     self._cleanup_finished_session_task(session_key, interrupt_event)
-
-        return response
     
     def _cleanup_finished_session_task(
         self, session_key: str, interrupt_event: Optional[asyncio.Event]

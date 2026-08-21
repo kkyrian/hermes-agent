@@ -738,24 +738,12 @@ def _iter_dispatched_command_tokens(command: str):
                     index = end + 1
 
 
-def _dispatched_destructive_command(command: str) -> str | None:
-    """Return the nested hardline command family, when present."""
+def _dispatched_hardline_description(command: str) -> str | None:
+    """Return the nested hardline description, when present."""
     for tokens in _iter_dispatched_command_tokens(command):
-        executable = os.path.basename(tokens[0]).lower()
-        if re.fullmatch(r"mkfs(?:\.[a-z0-9]+)?", executable):
-            return "mkfs"
-        if executable != "dd" or any(
-            token in {"-h", "--help"} for token in tokens[1:]
-        ):
-            continue
-        for token in tokens[1:]:
-            if "=" not in token:
-                continue
-            name, target = token.split("=", 1)
-            if name.lower() == "of" and re.fullmatch(
-                _HARDLINE_BLOCK_DEVICE, target, re.IGNORECASE
-            ):
-                return "dd"
+        blocked, description = detect_hardline_command(shlex.join(tokens))
+        if blocked:
+            return description
     return None
 
 
@@ -1184,11 +1172,9 @@ def detect_hardline_command(command: str) -> tuple:
     if malformed_grep:
         return (True, _MALFORMED_EXEC_DESCRIPTION)
     for command_variant in _command_detection_variants(command):
-        dispatched = _dispatched_destructive_command(command_variant)
-        if dispatched == "mkfs":
-            return (True, "format filesystem (mkfs)")
-        if dispatched == "dd":
-            return (True, "dd to raw block device")
+        dispatched = _dispatched_hardline_description(command_variant)
+        if dispatched:
+            return (True, dispatched)
         if _has_unquoted_raw_device_redirection(command_variant):
             return (True, "redirect to raw block device")
         if _has_recursive_protected_rm(command_variant):

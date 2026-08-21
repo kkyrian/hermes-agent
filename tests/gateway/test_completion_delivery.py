@@ -677,9 +677,10 @@ def test_failed_recursion_capped_followup_retains_durable_claim():
 
     class _Adapter:
         _active_sessions = {}
+        _session_tasks = {}
 
-        async def _process_message_background(self, _event, _session_key):
-            return {"failed": True}
+        async def _process_message_background(self, event, _session_key):
+            event._hermes_turn_completed_durably = False
 
     async def _run():
         adapter = _Adapter()
@@ -711,6 +712,63 @@ def test_failed_recursion_capped_followup_retains_durable_claim():
 
     record = asyncio.run(_run())
     assert record.get("fallback_consumed") is not True
+
+
+def test_streamed_recursion_capped_followup_releases_session_and_consumes_claim(
+    monkeypatch,
+):
+    from tools import async_delegation
+
+    session_key = "agent:main:telegram:dm:12345:678"
+    acknowledgements = []
+    monkeypatch.setattr(
+        async_delegation,
+        "complete_completion_delivery",
+        lambda delegation_id, _claim_id: acknowledgements.append(delegation_id) or True,
+    )
+
+    class _Adapter:
+        _active_sessions = {}
+        _session_tasks = {}
+
+        async def _process_message_background(self, event, key):
+            self._active_sessions[key] = asyncio.Event()
+            event._hermes_turn_completed_durably = True
+            if self._session_tasks.get(key) is asyncio.current_task():
+                self._active_sessions.pop(key, None)
+
+    async def _run():
+        adapter = _Adapter()
+        runner = _runner(adapter)
+        runner._is_session_run_current = lambda _key, _generation: True
+        record = {
+            "text": "completion evidence",
+            "delegation_id": "deleg-streamed-fallback",
+            "claim_id": "claim-streamed-fallback",
+            "generation": 3,
+            "fallback_queued": True,
+        }
+        runner._deferred_completion_deliveries = {session_key: [record]}
+        event = MessageEvent(
+            text=record["text"],
+            source=SessionSource(
+                platform=Platform.TELEGRAM,
+                chat_id="12345",
+                chat_type="dm",
+            ),
+            internal=True,
+        )
+        _tag_deferred_completion_fallback(event, record)
+        assert _schedule_capped_typed_internal_followup(
+            runner, adapter, session_key, event, 3
+        ) is True
+        await asyncio.gather(*list(runner._background_tasks))
+        return adapter, runner
+
+    adapter, runner = asyncio.run(_run())
+    assert session_key not in adapter._active_sessions
+    assert runner._deferred_completion_deliveries.get(session_key, []) == []
+    assert acknowledgements == ["deleg-streamed-fallback"]
 
 
 def test_recursion_capped_internal_followup_drops_stale_generation():
