@@ -195,7 +195,7 @@ def test_hook_suffixes_spill_or_truncate_before_small_turn_budget(tmp_path):
     assert content.index("INTERNAL-EVIDENCE") < content.index("STEER-GUIDANCE")
     assert "z" * 1_000 not in content
     assert "Post-tool context" in content
-    assert len(content) < 500
+    assert len(content) <= 120
 
 
 def test_post_tool_context_appends_to_multimodal_result(tmp_path):
@@ -286,6 +286,11 @@ def test_multimodal_hook_suffix_is_aggregate_budgeted(tmp_path):
     hook_text = messages[0]["content"][-1]["text"]
     assert "x" * 1_000 not in hook_text
     assert len(hook_text) < 200
+    assert len("".join(
+        part.get("text", "")
+        for part in messages[0]["content"]
+        if isinstance(part, dict) and part.get("type") == "text"
+    )) <= 200
 
 
 def test_post_tool_context_spills_joined_aggregate_and_persists_preview(tmp_path):

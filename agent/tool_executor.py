@@ -330,6 +330,50 @@ def _rebudget_tool_bases_preserving_suffixes(
     budget: BudgetConfig,
 ) -> None:
     """Rebudget base output while preserving internal/steer/hook suffix order."""
+    def _text_content(value: Any) -> str:
+        if isinstance(value, list):
+            return "\n".join(
+                str(part.get("text", ""))
+                for part in value
+                if isinstance(part, dict) and part.get("type") == "text"
+            )
+        return value if isinstance(value, str) else _multimodal_text_summary(value)
+
+    def _cap_messages(messages: list[dict], limit: int, marker: str) -> None:
+        overflow = sum(len(item["content"]) for item in messages) - limit
+        if overflow <= 0:
+            return
+        for item in reversed(messages):
+            if overflow <= 0:
+                break
+            content = item["content"]
+            target = max(0, len(content) - overflow)
+            replacement = (
+                marker[:target]
+                if target <= len(marker)
+                else content[: target - len(marker)] + marker
+            )
+            overflow -= len(content) - len(replacement)
+            item["content"] = replacement
+
+    def _restore_multimodal_base(original: list, text: str) -> list:
+        if _text_content(original) == text:
+            return list(original)
+        restored = []
+        inserted = False
+        for part in original:
+            if isinstance(part, dict) and part.get("type") == "text":
+                if text and not inserted:
+                    replacement = dict(part)
+                    replacement["text"] = text
+                    restored.append(replacement)
+                    inserted = True
+                continue
+            restored.append(part)
+        if text and not inserted:
+            restored.append({"type": "text", "text": text})
+        return restored
+
     suffixes: list[dict | None] = []
     authority_size = 0
     original_contents = [message.get("content", "") for message in tool_messages]
@@ -361,10 +405,54 @@ def _rebudget_tool_bases_preserving_suffixes(
             suffixes.append(
                 {"kind": "blocks", "authority": authority_suffix, "hook": hook_suffix}
             )
-            authority_size += len(_multimodal_text_summary(authority_suffix))
+            authority_size += len(_text_content(authority_suffix))
         else:
             suffixes.append(None)
-            authority_size += len(_multimodal_text_summary(final))
+            authority_size += len(_text_content(final))
+
+    base_messages = []
+    base_indexes = []
+    base_budget = max(0, budget.turn_budget - authority_size)
+    for index, (message, base, suffix) in enumerate(
+        zip(tool_messages, base_contents, suffixes)
+    ):
+        if suffix is None:
+            continue
+        base_indexes.append(index)
+        base_messages.append({
+            "role": "tool",
+            "tool_call_id": message.get("tool_call_id", f"base_{index}"),
+            "content": _text_content(base),
+        })
+    base_evidence_size = sum(len(item["content"]) for item in base_messages)
+    preserve_budget_evidence = (
+        base_evidence_size > base_budget
+        and any(
+            "<persisted-output>" in item["content"]
+            or "Truncated:" in item["content"]
+            for item in base_messages
+        )
+    )
+    if base_messages and not preserve_budget_evidence:
+        enforce_turn_budget(
+            base_messages,
+            env=env,
+            config=BudgetConfig(
+                default_result_size=budget.default_result_size,
+                turn_budget=base_budget,
+                preview_size=min(
+                    budget.preview_size,
+                    max(0, base_budget // max(1, len(base_messages))),
+                ),
+                tool_overrides=budget.tool_overrides,
+            ),
+        )
+        _cap_messages(
+            base_messages,
+            base_budget,
+            "[Tool output truncated by aggregate turn budget.]",
+        )
+    base_size = sum(len(item["content"]) for item in base_messages)
 
     hook_messages = []
     hook_indexes = []
@@ -379,11 +467,11 @@ def _rebudget_tool_bases_preserving_suffixes(
                 "content": (
                     suffix["hook"]
                     if suffix["kind"] == "text"
-                    else _multimodal_text_summary(suffix["hook"])
+                    else _text_content(suffix["hook"])
                 ),
             }
         )
-    hook_budget = max(0, budget.turn_budget - authority_size)
+    hook_budget = max(0, budget.turn_budget - authority_size - base_size)
     if hook_messages:
         enforce_turn_budget(
             hook_messages,
@@ -398,20 +486,11 @@ def _rebudget_tool_bases_preserving_suffixes(
                 tool_overrides=budget.tool_overrides,
             ),
         )
-        overflow = sum(len(item["content"]) for item in hook_messages) - hook_budget
-        if overflow > 0:
-            marker = "[Post-tool context truncated by aggregate turn budget.]"
-            for item in reversed(hook_messages):
-                if overflow <= 0:
-                    break
-                content = item["content"]
-                target = max(0, len(content) - overflow)
-                if target <= len(marker):
-                    replacement = marker[:target]
-                else:
-                    replacement = content[: target - len(marker)] + marker
-                overflow -= len(content) - len(replacement)
-                item["content"] = replacement
+        _cap_messages(
+            hook_messages,
+            hook_budget,
+            "[Post-tool context truncated by aggregate turn budget.]",
+        )
         for index, item in zip(hook_indexes, hook_messages):
             suffix = suffixes[index]
             suffix["hook"] = (
@@ -420,36 +499,22 @@ def _rebudget_tool_bases_preserving_suffixes(
                 else ([{"type": "text", "text": item["content"]}] if item["content"] else [])
             )
 
-    hook_size = sum(
-        len(
-            suffix["hook"]
-            if suffix["kind"] == "text"
-            else _multimodal_text_summary(suffix["hook"])
-        )
-        for suffix in suffixes
-        if suffix is not None
-    )
-
-    base_budget = BudgetConfig(
-        default_result_size=budget.default_result_size,
-        turn_budget=max(0, budget.turn_budget - authority_size - hook_size),
-        preview_size=budget.preview_size,
-        tool_overrides=budget.tool_overrides,
-    )
-    for message, base, suffix in zip(tool_messages, base_contents, suffixes):
-        message["content"] = base if suffix is not None else ""
-    enforce_turn_budget(tool_messages, env=env, config=base_budget)
-    for message, suffix, original in zip(tool_messages, suffixes, original_contents):
+    budgeted_bases = {
+        index: item["content"] for index, item in zip(base_indexes, base_messages)
+    }
+    for index, (message, base, suffix, original) in enumerate(
+        zip(tool_messages, base_contents, suffixes, original_contents)
+    ):
         if suffix is None:
             message["content"] = original
             continue
+        budgeted_base = budgeted_bases.get(index, "")
         if suffix["kind"] == "text":
             message["content"] = (
-                message.get("content", "") + suffix["authority"] + suffix["hook"]
+                budgeted_base + suffix["authority"] + suffix["hook"]
             )
         else:
-            content = message.get("content", [])
-            blocks = list(content) if isinstance(content, list) else []
+            blocks = _restore_multimodal_base(base, budgeted_base)
             message["content"] = blocks + suffix["authority"] + suffix["hook"]
 
 # Maximum number of concurrent worker threads for parallel tool execution.
