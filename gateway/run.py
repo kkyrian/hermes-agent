@@ -3592,6 +3592,13 @@ def _schedule_capped_typed_internal_followup(
             else:
                 _queue_typed_internal_followup(runner, session_key, event)
                 return
+            if not runner._is_session_run_current(session_key, run_generation):
+                logger.info(
+                    "Discarding stale capped internal follow-up for session=%s generation=%s",
+                    session_key or "?",
+                    run_generation,
+                )
+                return
             await process(event, session_key)
             if _mark_deferred_completion_fallback_consumed(
                 runner, session_key, event
@@ -26126,24 +26133,37 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 self._completion_notification_batch_tasks.pop(key, None)
             if not entries:
                 return
-            if len(entries) == 1:
-                synth_text = entries[0][0]
+            fresh_entries = []
+            with self._completion_delivery_lock:
+                for entry in entries:
+                    identity = self._completion_delivery_identity(entry[1])
+                    if (
+                        identity is not None
+                        and identity in self._completion_deliveries_delivered
+                    ):
+                        continue
+                    fresh_entries.append(entry)
+            if not fresh_entries:
+                delivered = None
+                return
+            if len(fresh_entries) == 1:
+                synth_text = fresh_entries[0][0]
             else:
-                synth_text = self._format_coalesced_process_completions(entries)
+                synth_text = self._format_coalesced_process_completions(fresh_entries)
 
             # A duplicate primary can legitimately return None from the
             # lifecycle dedupe seam.  Try the next batch identity so a
             # fresh sibling is never discarded with that duplicate.
             delivered = None
-            for _text, candidate_evt, _future in entries:
+            for _text, candidate_evt, _future in fresh_entries:
                 delivered = await self._deliver_completion_notification(
                     synth_text, candidate_evt,
                 )
                 if delivered is not None:
                     break
-            if delivered is True and len(entries) > 1:
+            if delivered is True and len(fresh_entries) > 1:
                 self._record_coalesced_completion_siblings(
-                    [evt for _text, evt, _future in entries]
+                    [evt for _text, evt, _future in fresh_entries]
                 )
         except asyncio.CancelledError:
             # Shutdown may cancel us either during the fan-in window or while

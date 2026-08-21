@@ -802,6 +802,16 @@ class TestExpandedHardlineFloor:
     ):
         assert detect_hardline_command(command) == (False, None)
 
+    def test_unquoted_heredoc_command_substitution_remains_executable(self):
+        command = "cat <<EOF\n$(echo x > /dev/sda)\nEOF"
+        blocked, description = detect_hardline_command(command)
+        assert blocked is True
+        assert description
+
+    def test_unquoted_heredoc_literal_redirection_remains_data(self):
+        command = "cat <<EOF\necho x > /dev/sda\nEOF"
+        assert detect_hardline_command(command) == (False, None)
+
 
 class TestGatewayProtection:
     """Prevent agents from starting the gateway outside systemd management."""

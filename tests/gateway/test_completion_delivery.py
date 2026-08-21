@@ -650,6 +650,7 @@ def test_recursion_capped_internal_followup_is_scheduled_without_user_wakeup():
     async def _run():
         adapter = _Adapter()
         runner = _runner(adapter)
+        runner._is_session_run_current = lambda _key, _generation: True
         event = MessageEvent(
             text="completion evidence",
             source=SessionSource(
@@ -668,6 +669,37 @@ def test_recursion_capped_internal_followup_is_scheduled_without_user_wakeup():
     assert seen == [
         ("completion evidence", "agent:main:telegram:dm:12345:678")
     ]
+
+
+def test_recursion_capped_internal_followup_drops_stale_generation():
+    seen = []
+
+    class _Adapter:
+        _active_sessions = {}
+
+        async def _process_message_background(self, event, session_key):
+            seen.append((event.text, session_key))
+
+    async def _run():
+        adapter = _Adapter()
+        runner = _runner(adapter)
+        runner._is_session_run_current = lambda _key, _generation: False
+        event = MessageEvent(
+            text="stale completion",
+            source=SessionSource(
+                platform=Platform.TELEGRAM,
+                chat_id="12345",
+                chat_type="dm",
+            ),
+            internal=True,
+        )
+        assert _schedule_capped_typed_internal_followup(
+            runner, adapter, "agent:main:telegram:dm:12345:678", event, 3
+        ) is True
+        await asyncio.gather(*list(runner._background_tasks))
+
+    asyncio.run(_run())
+    assert seen == []
 
 
 def test_settlement_preserves_record_deferred_during_async_classification(monkeypatch):
@@ -1120,6 +1152,26 @@ def test_duplicate_primary_does_not_discard_fresh_batch_sibling():
     adapter.handle_message.assert_awaited_once()
     fresh_identity = runner._completion_delivery_identity(fresh)
     assert fresh_identity in runner._completion_deliveries_delivered
+
+
+def test_duplicate_primary_is_omitted_from_fresh_batch_text():
+    adapter = SimpleNamespace(handle_message=AsyncMock())
+    runner = _runner(adapter)
+    duplicate = _completion_event(started_at=1.0, session_id="proc_duplicate")
+    fresh = _completion_event(started_at=2.0, session_id="proc_fresh")
+    duplicate_identity = runner._completion_delivery_identity(duplicate)
+    runner._completion_deliveries_delivered[duplicate_identity] = None
+
+    async def _exercise():
+        return await asyncio.gather(
+            runner._enqueue_process_completion_notification("duplicate text", duplicate),
+            runner._enqueue_process_completion_notification("fresh text", fresh),
+        )
+
+    assert asyncio.run(_exercise()) == [True, True]
+    delivered_text = adapter.handle_message.await_args.args[0].text
+    assert "fresh text" in delivered_text
+    assert "duplicate text" not in delivered_text
 
 
 def test_batch_format_failure_resolves_waiters_for_retry(monkeypatch):
