@@ -10,6 +10,7 @@ import os
 from pathlib import Path
 import shutil
 import tempfile
+import uuid
 
 import yaml
 
@@ -146,7 +147,10 @@ def apply_policy(home: Path, fragment: Path, *, apply: bool, allow_live: bool) -
     if not apply or not report["changed"]:
         return report
 
-    stamp = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    stamp = (
+        dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+        + f"-{uuid.uuid4().hex[:8]}"
+    )
     backup_dir = home / "backups" / "skill-prompt-exposure" / stamp
     backup_dir.mkdir(parents=True, exist_ok=False)
     backup_config = backup_dir / "config.yaml.before"

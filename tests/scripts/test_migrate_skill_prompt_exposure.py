@@ -81,6 +81,34 @@ def test_apply_backup_and_rollback(tmp_path):
     assert json.loads(manifest.read_text())["backup_config"]
 
 
+def test_rapid_successive_applies_use_distinct_backup_directories(tmp_path):
+    home = tmp_path / "profile"
+    home.mkdir()
+    config = home / "config.yaml"
+    config.write_text("model:\n  default: test\n", encoding="utf-8")
+    first_policy = tmp_path / "first.yaml"
+    second_policy = tmp_path / "second.yaml"
+    _policy(first_policy)
+    _policy(second_policy)
+    second_policy.write_text(
+        second_policy.read_text(encoding="utf-8").replace(
+            "default: name", "default: description"
+        ),
+        encoding="utf-8",
+    )
+
+    fixed_now = mock.Mock()
+    fixed_now.strftime.return_value = "20260823T120000000000Z"
+    with mock.patch.object(MOD.dt, "datetime") as datetime_mock:
+        datetime_mock.now.return_value = fixed_now
+        first = MOD.apply_policy(home, first_policy, apply=True, allow_live=False)
+        second = MOD.apply_policy(home, second_policy, apply=True, allow_live=False)
+
+    assert Path(first["manifest"]).parent != Path(second["manifest"]).parent
+    assert Path(first["manifest"]).exists()
+    assert Path(second["manifest"]).exists()
+
+
 def test_manifest_publication_failure_does_not_mutate_config(tmp_path):
     home = tmp_path / "profile"
     home.mkdir()
