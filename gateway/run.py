@@ -3570,6 +3570,22 @@ def _queue_typed_internal_followup(runner: Any, session_key: str, event: Message
         queues.setdefault(session_key, []).append(event)
 
 
+def _requeue_typed_followup_after_preprocess_abort(
+    runner: Any, session_key: str, event: Optional[MessageEvent]
+) -> bool:
+    """Restore a claimed typed completion when inbound preprocessing refuses it."""
+    if event is None:
+        return False
+    metadata = getattr(event, "metadata", None) or {}
+    if not (
+        getattr(event, "internal", False)
+        and metadata.get("internal_event_kind") == "subagent_completion"
+    ):
+        return False
+    _queue_typed_internal_followup(runner, session_key, event)
+    return True
+
+
 def _schedule_capped_typed_internal_followup(
     runner: Any,
     adapter: Any,
@@ -30408,6 +30424,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         session_key=next_session_key,
                     )
                     if next_message is None:
+                        _requeue_typed_followup_after_preprocess_abort(
+                            self, next_session_key, pending_event
+                        )
                         return result
                     next_message_id = self._reply_anchor_for_event(pending_event)
                     next_channel_prompt = getattr(pending_event, "channel_prompt", None)
