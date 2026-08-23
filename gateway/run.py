@@ -3557,9 +3557,6 @@ def _queue_typed_internal_followup(runner: Any, session_key: str, event: Message
     if not isinstance(metadata, dict):
         metadata = {}
         event.metadata = metadata
-    metadata["durable_delivery_generation"] = int(
-        record.get("generation") or 0
-    )
     metadata.setdefault("internal_event_kind", "subagent_completion")
     lock = getattr(runner, "_typed_internal_followups_lock", None)
     if lock is None:
@@ -3650,6 +3647,9 @@ def _tag_deferred_completion_fallback(
     if not isinstance(metadata, dict):
         metadata = {}
         event.metadata = metadata
+    metadata["durable_delivery_generation"] = int(
+        record.get("generation") or 0
+    )
     claims = metadata.setdefault("durable_completion_claims", [])
     claim = {
         "delegation_id": str(record.get("delegation_id") or ""),
