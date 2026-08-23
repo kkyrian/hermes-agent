@@ -1279,19 +1279,17 @@ def _user_deny_block_result(pattern: str) -> dict:
 
 
 def _save_blocked_payload(command: str) -> Optional[str]:
-    """Persist a parser-limit-blocked command as a runnable script.
+    """Persist a parser-limit-blocked command for review only.
 
     The parser-limit block fires on payload SIZE/shape, not on the
-    operation — the command itself is usually a legitimate script the
-    model inlined (heredoc, giant one-liner). Materialize it to a file so
-    the recovery is one turn (`bash <file>`) instead of two (re-author via
-    write_file, then run). Saving is strictly safer than the hint-only
-    path: the file goes through the same execution pipeline as any other
-    script (including the referenced-script content guard), and nothing
-    is executed here.
+    operation — the command itself is often a legitimate script the model
+    inlined (heredoc, giant one-liner). It can also hide a hardline operation
+    beyond the parser's bounded inspection window, so the saved artifact must
+    never be presented as executable recovery. Materialize it only so a human
+    can inspect or copy safe portions into a new command.
 
-    Returns the saved path, or None on any failure (the hint then falls
-    back to the manual write_file recipe).
+    Returns the saved path, or None on any failure (the guidance then remains
+    review-only without creating an artifact).
     """
     try:
         from hermes_constants import get_hermes_home
@@ -1301,18 +1299,18 @@ def _save_blocked_payload(command: str) -> Optional[str]:
         script_dir.mkdir(parents=True, exist_ok=True)
         # Opportunistic cleanup: blocked payloads older than 7 days.
         cutoff = _time.time() - 7 * 86400
-        for old in script_dir.glob("blocked-*.sh"):
-            try:
-                if old.stat().st_mtime < cutoff:
-                    old.unlink()
-            except OSError:
-                pass
-        path = script_dir / f"blocked-{int(_time.time())}-{_uuid.uuid4().hex[:8]}.sh"
+        for pattern in ("blocked-*.txt", "blocked-*.sh"):
+            for old in script_dir.glob(pattern):
+                try:
+                    if old.stat().st_mtime < cutoff:
+                        old.unlink()
+                except OSError:
+                    pass
+        path = script_dir / f"blocked-{int(_time.time())}-{_uuid.uuid4().hex[:8]}.txt"
         path.write_text(
-            "#!/bin/bash\n"
-            "# Auto-saved by Hermes: this command exceeded the inline command\n"
-            "# parser limit and was blocked from direct execution. Review it,\n"
-            "# then run it via: bash " + str(path) + "\n"
+            "# Auto-saved by Hermes for review only: this command exceeded the\n"
+            "# bounded inline-command inspection limit. Do not execute this\n"
+            "# file directly; inspect it and author a new safe command.\n"
             + command
             + ("\n" if not command.endswith("\n") else ""),
             encoding="utf-8", errors="replace",
@@ -1337,25 +1335,26 @@ def _hardline_block_result(description: str, command: str = "") -> dict:
     # (heredoc script, base64 blob, one-line python -c program) — not a
     # genuinely forbidden operation. 198 occurrences in a 250k-call
     # production window, typically followed by blind rephrase retries.
-    # Auto-save the payload as a runnable script and point at it; fall
-    # back to the manual write_file recipe when saving fails.
+    # Auto-save the payload for review only. Parser-limit/malformed content has
+    # not passed full hardline inspection, so never suggest an executable
+    # wrapper that would turn the uninspected payload into an allowed command.
     if description in (_PARSER_LIMIT_DESCRIPTION, _MALFORMED_EXEC_DESCRIPTION):
         saved = _save_blocked_payload(command) if command else None
         if saved:
             message += (
                 " RECOVERY: this block fires on oversized/unparseable inline "
                 "command payloads (heredocs, giant one-liners), not on the "
-                f"operation itself. Your command was saved to {saved} — "
-                f"review it, then run: terminal(command=\"bash {saved}\"). "
-                "Do not retry inline."
+                f"operation itself. Your command was saved to {saved} for "
+                "human review only. Do not execute the saved file directly; "
+                "inspect it and author a new safe command. Do not retry inline."
             )
         else:
             message += (
                 " RECOVERY: this block fires on oversized/unparseable inline "
                 "command payloads (heredocs, giant one-liners), not on the "
-                "operation itself. Write the script to a file with write_file, "
-                "then run it: terminal(command=\"bash /path/script.sh\") or "
-                "\"python3 /path/script.py\". Do not retry inline."
+                "operation itself. The payload could not be saved for review. "
+                "Inspect the original content and author a new safe command; "
+                "do not retry it inline or wrap it in an executable file."
             )
     return {
         "approved": False,
