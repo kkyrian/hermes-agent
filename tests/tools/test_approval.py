@@ -813,6 +813,13 @@ class TestExpandedHardlineFloor:
         assert blocked is True
         assert description
 
+    def test_deep_dispatcher_nesting_fails_closed_without_recursion_error(self):
+        blocked, description = detect_hardline_command(
+            ("command " * 500) + "echo ok"
+        )
+        assert blocked is True
+        assert description
+
     def test_unquoted_heredoc_command_substitution_remains_executable(self):
         command = "cat <<EOF\n$(echo x > /dev/sda)\nEOF"
         blocked, description = detect_hardline_command(command)
