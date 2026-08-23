@@ -64,6 +64,53 @@ def test_durable_completion_ack_retry_never_requeues_agent_turn(monkeypatch):
     assert cli._queued_process_notification_claims == []
 
 
+def test_durable_completion_ack_retry_survives_transient_exception(monkeypatch):
+    cli = HermesCLI.__new__(HermesCLI)
+    cli._pending_input = queue.Queue()
+    item = _DeferredCompletionInput("completion", {"delegation_id": "d1"}, "claim")
+    cli._queued_process_notification_claims = [item]
+    attempts = []
+    monkeypatch.setattr("cli.time.sleep", lambda _delay: None)
+
+    def _ack(*_args):
+        attempts.append(1)
+        if len(attempts) == 1:
+            raise OSError("transient sqlite failure")
+        return True
+
+    monkeypatch.setattr("tools.async_delegation.complete_event_delivery", _ack)
+
+    assert _retry_deferred_completion_ack(cli, item) is True
+    assert len(attempts) == 2
+    assert cli._queued_process_notification_claims == []
+
+
+def test_admitted_completion_ack_failure_schedules_ack_only_retry(monkeypatch):
+    cli = HermesCLI.__new__(HermesCLI)
+    cli._pending_input = queue.Queue()
+    cli._admitted_process_notification_claims = [
+        ({"delegation_id": "d1"}, "claim", "completion")
+    ]
+    cli._stop_admitted_process_notification_renewal = MagicMock()
+    cli._start_admitted_process_notification_renewal = MagicMock()
+    scheduled = []
+    monkeypatch.setattr(
+        "tools.async_delegation.complete_event_delivery", lambda *_args: False
+    )
+    monkeypatch.setattr(
+        "cli._schedule_deferred_completion_ack_retry",
+        lambda _cli, item: scheduled.append(item),
+    )
+
+    cli._settle_admitted_process_notifications(
+        {"final_response": "used completion"}
+    )
+
+    assert len(scheduled) == 1
+    assert scheduled[0].text == "completion"
+    assert cli._pending_input.empty()
+
+
 def test_completion_wrapper_reports_durable_ack_result(monkeypatch):
     from tools.async_delegation import complete_event_delivery
 
@@ -121,7 +168,7 @@ def test_cli_completion_drain_uses_visible_session_identity(monkeypatch):
     )
     monkeypatch.setattr(
         "tools.async_delegation.complete_event_delivery",
-        lambda evt, token: completed.append((evt, token)),
+        lambda evt, token: completed.append((evt, token)) or True,
     )
 
     cli._drain_process_notifications("cli-idle")
@@ -166,7 +213,7 @@ def test_cli_completion_drain_admits_to_active_parent_mailbox(monkeypatch):
     )
     monkeypatch.setattr(
         "tools.async_delegation.complete_event_delivery",
-        lambda evt, token: completed.append((evt, token)),
+        lambda evt, token: completed.append((evt, token)) or True,
     )
 
     cli._drain_process_notifications("cli-active")

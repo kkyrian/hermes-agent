@@ -702,6 +702,8 @@ class TestExpandedHardlineFloor:
             "blkdiscard /dev/dm-0",
             "shred -n 1 /dev/disk/by-id/wwn-0x1234",
             "cp image.raw /dev/sda 2>/tmp/cp.log",
+            "cp /tmp/image 2>&1 /dev/sda",
+            "shred 2>&1 /dev/sda",
             "find -H /home -delete",
             "find -D search /home -delete",
             "find -O3 /root -delete",

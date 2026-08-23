@@ -5028,11 +5028,21 @@ def _retry_deferred_completion_ack(
     for attempt in range(max_attempts):
         if attempt:
             time.sleep(min(2 ** (attempt - 1), 30))
-        if complete_event_delivery(item.event, item.claim):
+        try:
+            acknowledged = bool(complete_event_delivery(item.event, item.claim))
+        except Exception:
+            acknowledged = False
+            logging.debug(
+                "could not acknowledge deferred CLI completion",
+                exc_info=True,
+            )
+        if acknowledged:
             _forget_queued_deferred_completion(cli, item)
             return True
-    release_event_delivery(item.event, item.claim)
-    _forget_queued_deferred_completion(cli, item)
+    try:
+        release_event_delivery(item.event, item.claim)
+    finally:
+        _forget_queued_deferred_completion(cli, item)
     return False
 
 
@@ -13045,13 +13055,24 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                         exc_info=True,
                     )
                 continue
+            ack_item = _DeferredCompletionInput(message, event, claim)
+            queued = getattr(self, "_queued_process_notification_claims", None)
+            if not isinstance(queued, list):
+                queued = []
+                self._queued_process_notification_claims = queued
+            queued.append(ack_item)
             try:
-                complete_event_delivery(event, claim)
+                acknowledged = bool(complete_event_delivery(event, claim))
             except Exception:
+                acknowledged = False
                 logging.debug(
                     "could not acknowledge admitted CLI completion",
                     exc_info=True,
                 )
+            if acknowledged:
+                _forget_queued_deferred_completion(self, ack_item)
+            else:
+                _schedule_deferred_completion_ack_retry(self, ack_item)
         for message in remaining:
             self._pending_input.put(message)
         result.pop("pending_internal_events", None)
