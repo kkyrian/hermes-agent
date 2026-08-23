@@ -805,7 +805,12 @@ def _is_protected_find_path(path: str) -> bool:
 
 def _has_destructive_raw_device_operation(command: str) -> bool:
     """Detect raw-device cp/sgdisk operations independent of option order."""
-    for match in _HARDLINE_RAW_DEVICE_COMMAND_RE.finditer(command):
+    scan_command = re.sub(
+        r"(?<!\S)\d*(?:>&|<&)\d+(?=\s|$)",
+        lambda match: " " * len(match.group(0)),
+        command,
+    )
+    for match in _HARDLINE_RAW_DEVICE_COMMAND_RE.finditer(scan_command):
         try:
             tokens = shlex.split(match.group("args"), posix=True)
         except ValueError:
