@@ -3,7 +3,15 @@
 import queue
 from unittest.mock import MagicMock
 
-from cli import HermesCLI
+from cli import HermesCLI, _deferred_completion_turn_is_durable
+
+
+def test_deferred_completion_ack_requires_durable_turn():
+    cli = HermesCLI.__new__(HermesCLI)
+    cli._last_chat_turn_durable = False
+    assert not _deferred_completion_turn_is_durable(cli, "Error: persistence failed")
+    cli._last_chat_turn_durable = True
+    assert _deferred_completion_turn_is_durable(cli, "completed")
 
 
 def test_cli_completion_drain_uses_visible_session_identity(monkeypatch):

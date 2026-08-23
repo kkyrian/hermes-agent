@@ -805,6 +805,14 @@ class TestExpandedHardlineFloor:
     ):
         assert detect_hardline_command(command) == (False, None)
 
+    def test_uppercase_home_operand_preserves_actual_home_identity(self, monkeypatch):
+        monkeypatch.setattr(os.path, "expanduser", lambda _path: "/Users/Alice")
+        blocked, description = detect_hardline_command(
+            "find /Users/Alice -delete"
+        )
+        assert blocked is True
+        assert description
+
     def test_unquoted_heredoc_command_substitution_remains_executable(self):
         command = "cat <<EOF\n$(echo x > /dev/sda)\nEOF"
         blocked, description = detect_hardline_command(command)

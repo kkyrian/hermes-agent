@@ -1184,7 +1184,7 @@ def detect_hardline_command(command: str) -> tuple:
         if _has_mkfs_command(command_variant):
             return (True, "format filesystem (mkfs)")
         variant_lower = command_variant.lower()
-        if _has_lexically_protected_find_delete(variant_lower):
+        if _has_lexically_protected_find_delete(command_variant):
             return (True, "recursive find deletion of root/system/home")
         if _has_destructive_wipefs(variant_lower):
             return (True, "erase or discard an entire raw block device")

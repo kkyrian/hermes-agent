@@ -3557,6 +3557,9 @@ def _queue_typed_internal_followup(runner: Any, session_key: str, event: Message
     if not isinstance(metadata, dict):
         metadata = {}
         event.metadata = metadata
+    metadata["durable_delivery_generation"] = int(
+        record.get("generation") or 0
+    )
     metadata.setdefault("internal_event_kind", "subagent_completion")
     lock = getattr(runner, "_typed_internal_followups_lock", None)
     if lock is None:
@@ -4023,7 +4026,7 @@ def _turn_completed_durably(result_holder_value: Any, result: Any) -> bool:
 
 
 def _dequeue_typed_internal_followup(
-    runner: Any, session_key: str
+    runner: Any, session_key: str, run_generation: Optional[int] = None
 ) -> Optional[MessageEvent]:
     lock = getattr(runner, "_typed_internal_followups_lock", None)
     queues = getattr(runner, "_typed_internal_followups", None)
@@ -4033,10 +4036,32 @@ def _dequeue_typed_internal_followup(
         queue = queues.get(session_key)
         if not isinstance(queue, list) or not queue:
             return None
-        event = queue.pop(0)
-        if not queue:
-            queues.pop(session_key, None)
-        return event if isinstance(event, MessageEvent) else None
+        while queue:
+            event = queue.pop(0)
+            if not isinstance(event, MessageEvent):
+                continue
+            metadata = getattr(event, "metadata", None) or {}
+            event_generation = int(
+                metadata.get("durable_delivery_generation") or 0
+            )
+            if (
+                run_generation is not None
+                and event_generation
+                and event_generation != int(run_generation)
+            ):
+                logger.info(
+                    "Discarding stale typed internal follow-up for session=%s "
+                    "generation=%s current=%s",
+                    session_key,
+                    event_generation,
+                    run_generation,
+                )
+                continue
+            if not queue:
+                queues.pop(session_key, None)
+            return event
+        queues.pop(session_key, None)
+        return None
 
 
 def _strip_response_attachments_for_direct_send(response: str, adapter) -> str:
@@ -10842,6 +10867,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         _busy_state = self._peek_session_state(session_key)
         running_agent = _busy_state.turn.agent if _busy_state else None
+        _busy_generation = int(
+            _busy_state.persistent.run_generation if _busy_state else 0
+        )
 
         # --- Typed internal events never interrupt or acquire user authority ---
         # A completed delegate_task result is useful evidence for the active
@@ -10865,12 +10893,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             _enqueue_internal = getattr(running_agent, "enqueue_internal_event", None)
             if _is_subagent_completion and callable(_enqueue_internal):
                 try:
-                    if bool(_enqueue_internal(_internal_text)):
+                    _current_state = self._peek_session_state(session_key)
+                    _generation_current = bool(
+                        _current_state is not None
+                        and int(_current_state.persistent.run_generation)
+                        == _busy_generation
+                        and _current_state.turn.agent is running_agent
+                    )
+                    if _generation_current and bool(_enqueue_internal(_internal_text)):
                         _internal_metadata["durable_delivery_deferred"] = True
                         _internal_metadata["durable_delivery_session_key"] = session_key
-                        _internal_metadata["durable_delivery_generation"] = int(
-                            _busy_state.persistent.run_generation
-                        )
+                        _internal_metadata["durable_delivery_generation"] = _busy_generation
                         logger.info(
                             "Admitted subagent completion to active parent mailbox: session=%s",
                             session_key,
@@ -10885,9 +10918,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if _is_subagent_completion:
                 _internal_metadata["durable_delivery_deferred"] = True
                 _internal_metadata["durable_delivery_session_key"] = session_key
-                _internal_metadata["durable_delivery_generation"] = int(
-                    _busy_state.persistent.run_generation
-                )
+                _internal_metadata["durable_delivery_generation"] = _busy_generation
                 _queue_typed_internal_followup(self, session_key, event)
                 logger.info(
                     "Queued subagent completion for typed idle follow-up: session=%s",
@@ -26014,6 +26045,23 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     source=evt.get("_durable_delivery_source"),
                     parent_session_id=str(evt.get("parent_session_id") or ""),
                 )
+                current_state = self._peek_session_state(deferred_session_key)
+                if (
+                    current_state is not None
+                    and int(current_state.persistent.run_generation)
+                    != int(evt.get("_durable_delivery_deferred_generation") or 0)
+                ):
+                    await _settle_deferred_completion_deliveries(
+                        self,
+                        deferred_session_key,
+                        int(
+                            current_state.persistent.run_generation
+                            if current_state is not None
+                            else 0
+                        ),
+                        {},
+                        turn_completed=False,
+                    )
                 logger.info(
                     "Deferred durable async completion acknowledgement until "
                     "active-turn consumption: delegation=%s session=%s",
@@ -30102,7 +30150,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
             if not pending and not pending_event:
                 _typed_internal_event = _dequeue_typed_internal_followup(
-                    self, session_key
+                    self, session_key, int(run_generation or 0)
                 )
                 if _typed_internal_event is not None:
                     pending_event = _typed_internal_event

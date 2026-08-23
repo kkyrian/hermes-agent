@@ -712,6 +712,13 @@ def _inject_pending_steer_pre_api(
             "Pre-API-call steer drain: injected into tool msg at index %d",
             index,
         )
+        if message.get("_db_persisted"):
+            from agent.tool_executor import _persist_final_tool_result_batch
+
+            if not _persist_final_tool_result_batch(agent, [message]):
+                message["content"] = existing
+                _requeue_pending_steer(agent, steer)
+                return False
         return True
 
     lock = getattr(agent, "_pending_steer_lock", None)

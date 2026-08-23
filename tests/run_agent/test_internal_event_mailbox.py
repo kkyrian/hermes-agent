@@ -339,6 +339,26 @@ def test_pre_api_boundary_updates_an_already_persisted_tool_carrier() -> None:
     assert db.rows[-1]["content"] == "first completion\n\nlate completion"
 
 
+def test_late_steer_requeues_when_persisted_carrier_update_fails() -> None:
+    agent = _bare_agent()
+    setattr(agent, "_pending_steer", "owner correction")
+    setattr(agent, "_pending_steer_lock", threading.Lock())
+    setattr(agent, "_session_db", SimpleNamespace(
+        set_tool_result_content=lambda *_args: 0
+    ))
+    setattr(agent, "session_id", "sess-failed-steer")
+    messages = [{
+        "role": "tool",
+        "tool_call_id": "call-1",
+        "content": "durable tool output",
+        "_db_persisted": True,
+    }]
+
+    assert not _inject_pending_steer_pre_api(agent, messages)
+    assert messages[0]["content"] == "durable tool output"
+    assert agent._drain_pending_steer() == "owner correction"
+
+
 def test_pre_api_persistence_failure_requeues_event_and_steer(monkeypatch) -> None:
     agent = _bare_agent()
     agent._open_internal_event_mailbox()
