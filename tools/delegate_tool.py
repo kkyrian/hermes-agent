@@ -953,7 +953,7 @@ def _get_worktree_isolation() -> bool:
 _LEGACY_MAX_ASYNC_WARNED = False
 
 
-def _get_max_async_children() -> int:
+def _get_max_async_children(depth: Optional[int] = None) -> int:
     """Concurrency cap for background (``background=true``) delegations.
 
     DEPRECATED KNOB: ``delegation.max_async_children`` has been unified into
@@ -977,7 +977,7 @@ def _get_max_async_children() -> int:
             "delegation.max_concurrent_children now caps background "
             "delegations too. Remove the stale key from config.yaml."
         )
-    return _get_max_concurrent_children()
+    return _get_max_concurrent_children(depth)
 
 
 def _get_child_timeout() -> Optional[float]:
@@ -4307,7 +4307,7 @@ def delegate_task(
             parent_session_id=_parent_session_id,
             runner=_batch_runner,
             interrupt_fn=_batch_interrupt,
-            max_async_children=_get_max_async_children(),
+            max_async_children=_get_max_async_children(depth),
             # Reuse the live-transcript directory's id (when created) so the
             # returned delegation_id matches cache/delegation/live/<id>/.
             delegation_id=live_deleg_id,

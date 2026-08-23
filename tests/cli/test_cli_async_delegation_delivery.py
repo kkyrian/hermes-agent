@@ -28,6 +28,18 @@ def test_completion_wrapper_reports_durable_ack_result(monkeypatch):
     ) is True
 
 
+def test_legacy_completion_without_durable_row_is_acknowledged(tmp_path, monkeypatch):
+    from tools import async_delegation
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    async_delegation._reset_for_tests()
+
+    assert async_delegation.complete_event_delivery(
+        {"type": "async_delegation", "delegation_id": "legacy-no-row"},
+        "legacy-claim",
+    ) is True
+
+
 def test_cli_completion_drain_uses_visible_session_identity(monkeypatch):
     """A CLI window must not claim another window's restored completion."""
     cli = HermesCLI.__new__(HermesCLI)

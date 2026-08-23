@@ -6,7 +6,7 @@ Status: implementation plan (2026-08-09)
 
 Make the cold-start skill index profile-configurable without deleting or duplicating skill packages. A managed profile can hide a skill from the initial prompt, show its name only, or show its name and description. `skills_list` remains the complete name-and-description discovery surface and `skill_view` remains the complete body-loading surface.
 
-The initial rollout consumes the settled Agent Observatory Item 14 matrix: 11 prompt-hidden skills, 56 name-only skills, 11 description-bearing skills, plus the three settled follow-ups. Workspace-owned KK skills remain supplied only by the cwd-scoped context plugin; this change does not scan `.claude/skills`, `.agents/skills`, or create another registry.
+Concrete managed-profile policy belongs in the private deployment repository. This public design uses anonymized examples only. Workspace-owned skills remain supplied only by the cwd-scoped context plugin; this change does not scan `.claude/skills`, `.agents/skills`, or create another registry.
 
 ## Invariants
 
@@ -44,18 +44,18 @@ Explicit lists override `default`; duplicate membership is invalid and fails clo
 2. Apply the policy after normal compatibility/condition filtering and before category rendering. Keep hidden entries out of the initial index; render name-tier entries without descriptions even inside ordinary categories.
 3. Include the policy fingerprint and executable availability results in the existing skills prompt cache key. Do not rebuild a prompt after conversation construction.
 4. Document the new configuration defaults and update prompt-size reporting only if tests show it misstates index costs.
-5. Correct `research-paper-writing` frontmatter from the nonexistent `files` toolset to Hermes's registered `file` toolset.
-6. Add a checked-in Item 14 policy file generated from the settled exhaustive matrix. The two profile-local content follow-ups remain non-live migration inputs: the migration report must identify `planning-ledger-reconciliation` for extraction/cleanup and `terminal-tui-input-transport` for ownership/deduplication without editing live packages.
+5. Correct any bundled-skill frontmatter that names nonexistent toolsets.
+6. Keep only an anonymized example policy in this repository. Concrete policy matrices and profile-local content migrations remain private deployment inputs and must not be copied into this repository.
 7. Add a migration helper that targets an explicit `HERMES_HOME`, defaults to a side-effect-free dry-run, backs up `config.yaml` before applying, writes atomically, emits a manifest, and can restore from that manifest. Learned-skill cleanup is a separate reviewed package migration with its own backup because private profile-local bodies must not be copied into this repository. Live-profile writes and rollbacks require both `--apply` and `--allow-live-profile`; tests use temporary homes only.
 
 ## Verification plan
 
 - Unit-test all three tiers, precedence, duplicate policy entries, default behavior, category demotion interaction, external skills, platform filtering, and deterministic cache keys.
-- Assert Item 14 policy count invariants: 11 hidden, 56 names-only, 11 descriptions, 3 follow-ups.
-- In a temporary `HERMES_HOME`, construct representative Cassandra, kk-proxmox, Test, and Observatory-like skill trees and compare exact prompt bytes across repeated builds.
+- Assert the example policy has valid, disjoint exposure buckets.
+- In a temporary `HERMES_HOME`, construct representative anonymized skill trees and compare exact prompt bytes across repeated builds.
 - Assert hidden skills are absent from cold-start, name-only skills have no description there, retained descriptions are verbatim, `skills_list` still returns descriptions for every loadable skill, and `skill_view` returns full bodies.
 - Test `opencode` with all combinations of policy authority, terminal toolset, and executable availability; only the all-true case may advertise it.
-- Test the `research-paper-writing` correction against the real registered `file` toolset.
+- Test bundled-skill metadata corrections against registered toolsets.
 - Exercise migration dry-run, backup, atomic apply in a temporary home, injected partial failure, and rollback. Verify the four live profile directories are byte- and mtime-unchanged.
 - Record prompt byte/token deltas for representative profiles before and after the policy.
 
@@ -73,4 +73,4 @@ Explicit lists override `default`; duplicate membership is invalid and fails clo
 
 ## Rollout boundary
 
-Implementation and tests occur only in the `kk/item14-skill-curation` worktree. No live profile is changed. A later reviewed rollout must use the migration helper's dry-run output, take a fresh backup, apply one representative profile, run prompt/exposure probes, then proceed profile by profile with rollback manifests retained.
+Implementation and tests do not change a live profile. A later private, reviewed rollout must use the migration helper's dry-run output, take a fresh backup, apply one representative profile, run prompt/exposure probes, then proceed profile by profile with rollback manifests retained.
