@@ -214,6 +214,18 @@ def test_stale_typed_followup_is_not_consumed_by_new_generation() -> None:
     assert _dequeue_typed_internal_followup(runner, sk, 5) is None
 
 
+def test_tagged_deferred_fallback_keeps_origin_generation() -> None:
+    from gateway.run import _tag_deferred_completion_fallback
+
+    event = _make_internal_event("deferred completion")
+    _tag_deferred_completion_fallback(
+        event,
+        {"generation": 9, "delegation_id": "deleg-9", "claim_id": "claim-9"},
+    )
+
+    assert event.metadata["durable_delivery_generation"] == 9
+
+
 @pytest.mark.asyncio
 async def test_rejected_subagent_admission_uses_separate_typed_followup_queue() -> None:
     runner = _make_runner()

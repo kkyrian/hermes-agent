@@ -14,6 +14,20 @@ def test_deferred_completion_ack_requires_durable_turn():
     assert _deferred_completion_turn_is_durable(cli, "completed")
 
 
+def test_completion_wrapper_reports_durable_ack_result(monkeypatch):
+    from tools.async_delegation import complete_event_delivery
+
+    monkeypatch.setattr(
+        "tools.async_delegation.complete_completion_delivery",
+        lambda delegation_id, claim: (delegation_id, claim) == ("deleg-1", "claim-1"),
+    )
+
+    assert complete_event_delivery(
+        {"type": "async_delegation", "delegation_id": "deleg-1"},
+        "claim-1",
+    ) is True
+
+
 def test_cli_completion_drain_uses_visible_session_identity(monkeypatch):
     """A CLI window must not claim another window's restored completion."""
     cli = HermesCLI.__new__(HermesCLI)

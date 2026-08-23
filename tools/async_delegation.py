@@ -573,9 +573,12 @@ def complete_completion_delivery(delegation_id: str, claim_id: str) -> bool:
         return cur.rowcount == 1
 
 
-def complete_event_delivery(evt: Dict[str, Any], claim_id: str) -> None:
+def complete_event_delivery(evt: Dict[str, Any], claim_id: str) -> bool:
     if claim_id and evt.get("type") == "async_delegation":
-        complete_completion_delivery(str(evt.get("delegation_id") or ""), claim_id)
+        return complete_completion_delivery(
+            str(evt.get("delegation_id") or ""), claim_id
+        )
+    return False
 
 
 def release_event_delivery(evt: Dict[str, Any], claim_id: str) -> None:
