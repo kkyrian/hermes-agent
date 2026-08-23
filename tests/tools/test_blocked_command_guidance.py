@@ -15,27 +15,37 @@ class TestParserLimitRecovery:
         assert "RECOVERY" in r["message"]
         assert "blocked-scripts" in r["message"]
         import re as _re
-        m = _re.search(r"saved to (\S+\.sh)", r["message"])
+        m = _re.search(r"saved to (\S+\.txt)", r["message"])
         assert m, r["message"]
         from pathlib import Path
         saved = Path(m.group(1))
         assert saved.exists()
         body = saved.read_text()
         assert cmd in body
-        assert body.startswith("#!/bin/bash")
-        assert f"bash {saved}" in r["message"]
+        assert body.startswith("# Auto-saved by Hermes for review only")
+        assert f"bash {saved}" not in r["message"]
+        assert "Do not execute the saved file directly" in r["message"]
+
+    def test_parser_limit_hardline_suffix_never_gets_executable_recovery(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+        cmd = (" " * 5000) + "rm -rf /"
+        r = _hardline_block_result(_PARSER_LIMIT_DESCRIPTION, cmd)
+        assert r["approved"] is False
+        assert "human review only" in r["message"]
+        assert "terminal(command=" not in r["message"]
+        assert "bash " not in r["message"]
 
     def test_save_failure_falls_back_to_manual_recipe(self, monkeypatch):
         import tools.approval as ap
         monkeypatch.setattr(ap, "_save_blocked_payload", lambda c: None)
         r = _hardline_block_result(_PARSER_LIMIT_DESCRIPTION, "python3 -c 'x'")
-        assert "write_file" in r["message"]
-        assert "bash /path/script.sh" in r["message"]
+        assert "could not be saved for review" in r["message"]
+        assert "executable file" in r["message"]
 
     def test_no_command_falls_back_to_manual_recipe(self):
         r = _hardline_block_result(_PARSER_LIMIT_DESCRIPTION)
         assert "RECOVERY" in r["message"]
-        assert "write_file" in r["message"]
+        assert "could not be saved for review" in r["message"]
 
     def test_malformed_exec_block_has_recovery_recipe(self):
         r = _hardline_block_result(_MALFORMED_EXEC_DESCRIPTION)

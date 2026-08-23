@@ -33,6 +33,7 @@ import pytest
 from agent.tool_dispatch_helpers import make_tool_result_message
 from agent.agent_runtime_helpers import sanitize_api_messages
 from agent.tool_executor import execute_tool_calls_segmented
+from tools.tool_result_storage import BudgetConfig
 from hermes_state import SessionDB
 from run_agent import AIAgent
 
@@ -646,3 +647,44 @@ def test_execute_tool_calls_concurrent_flushes_each_tool_result_in_order():
     # production flush call breaks one of these assertions.
     assert flushed_tool_ids == ["c1", "c2"]
     assert flush_lengths == [1, 2]
+
+
+@pytest.mark.parametrize("executor_mode", ["sequential", "concurrent"])
+def test_subdirectory_hints_do_not_claim_persistence_or_escape_turn_budget(executor_mode):
+    agent = _make_agent()
+    calls = [
+        _mock_tool_call(name="web_search", call_id="c1"),
+        _mock_tool_call(name="web_search", call_id="c2"),
+    ]
+    assistant_message = SimpleNamespace(content="", tool_calls=calls)
+    messages: list = []
+    agent._subdirectory_hints.check_tool_call = MagicMock(
+        return_value="\n[Subdirectory context: REVIEW-ME]"
+    )
+    agent._flush_messages_to_session_db = MagicMock()
+    medium_result = "x" * 800
+    dispatch_patch = (
+        patch("run_agent.handle_function_call", return_value=medium_result)
+        if executor_mode == "sequential"
+        else patch.object(agent, "_invoke_tool", return_value=medium_result)
+    )
+
+    with (
+        dispatch_patch,
+        patch(
+            "agent.tool_executor.maybe_persist_tool_result",
+            side_effect=lambda **kwargs: kwargs["content"],
+        ),
+        patch(
+            "agent.tool_executor._budget_for_agent",
+            return_value=BudgetConfig(turn_budget=1200, preview_size=30),
+        ),
+    ):
+        if executor_mode == "sequential":
+            agent._execute_tool_calls_sequential(assistant_message, messages, "task-1")
+        else:
+            agent._execute_tool_calls_concurrent(assistant_message, messages, "task-1")
+
+    assert all("_trusted_budget_evidence" not in message for message in messages)
+    assert sum(len(message["content"]) for message in messages) <= 1200
+    assert all("x" * 60 not in message["content"] for message in messages)

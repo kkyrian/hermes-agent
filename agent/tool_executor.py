@@ -2260,6 +2260,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
             env=get_active_env(effective_task_id),
             config=_tool_budget,
         ) if not _is_multimodal_tool_result(function_result) else function_result
+        _result_was_persisted = function_result != _pre_budget_function_result
         _record_persisted_path_for_stub(agent, tc.id, function_result)
 
         subdir_hints = agent._subdirectory_hints.check_tool_call(name, args)
@@ -2292,7 +2293,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
             tc.id,
             effect_disposition=effect_disposition,
         )
-        if function_result != _pre_budget_function_result:
+        if _result_was_persisted:
             tool_message[TRUSTED_BUDGET_EVIDENCE_KEY] = True
         messages.append(tool_message)
         risk_metadata = tool_message.get("_tool_output_risk")
@@ -3245,6 +3246,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
             env=get_active_env(effective_task_id),
             config=_tool_budget,
         ) if not _is_multimodal_tool_result(function_result) else function_result
+        _result_was_persisted = function_result != _pre_budget_function_result
         _record_persisted_path_for_stub(agent, tool_call.id, function_result)
 
         # Discover subdirectory context files from tool arguments
@@ -3270,7 +3272,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
             tool_call.id,
             effect_disposition="unknown" if _execution_timed_out else None,
         )
-        if function_result != _pre_budget_function_result:
+        if _result_was_persisted:
             tool_message[TRUSTED_BUDGET_EVIDENCE_KEY] = True
         messages.append(tool_message)
         risk_metadata = tool_message.get("_tool_output_risk")
