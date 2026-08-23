@@ -3,7 +3,13 @@
 import queue
 from unittest.mock import MagicMock
 
-from cli import HermesCLI, _deferred_completion_turn_is_durable
+from cli import (
+    HermesCLI,
+    _DeferredCompletionInput,
+    _deferred_completion_turn_is_durable,
+    _retry_deferred_completion_ack,
+    _schedule_deferred_completion_turn_retry,
+)
 
 
 def test_deferred_completion_ack_requires_durable_turn():
@@ -12,6 +18,50 @@ def test_deferred_completion_ack_requires_durable_turn():
     assert not _deferred_completion_turn_is_durable(cli, "Error: persistence failed")
     cli._last_chat_turn_durable = True
     assert _deferred_completion_turn_is_durable(cli, "completed")
+
+
+def test_failed_completion_turn_retries_with_backoff_not_immediate_requeue(monkeypatch):
+    cli = HermesCLI.__new__(HermesCLI)
+    cli._pending_input = queue.Queue()
+    cli._queued_process_notification_claims = []
+    item = _DeferredCompletionInput("completion", {"delegation_id": "d1"}, "claim")
+    cli._queued_process_notification_claims.append(item)
+    scheduled = []
+
+    class _Timer:
+        daemon = False
+
+        def __init__(self, delay, callback, args=()):
+            scheduled.append((delay, callback, args))
+
+        def start(self):
+            pass
+
+    monkeypatch.setattr("cli.threading.Timer", _Timer)
+
+    assert _schedule_deferred_completion_turn_retry(cli, item) is True
+    assert cli._pending_input.empty()
+    assert scheduled[0][0] == 1
+    scheduled[0][1](*scheduled[0][2])
+    assert cli._pending_input.get_nowait() is item
+
+
+def test_durable_completion_ack_retry_never_requeues_agent_turn(monkeypatch):
+    cli = HermesCLI.__new__(HermesCLI)
+    cli._pending_input = queue.Queue()
+    item = _DeferredCompletionInput("completion", {"delegation_id": "d1"}, "claim")
+    cli._queued_process_notification_claims = [item]
+    attempts = []
+    monkeypatch.setattr("cli.time.sleep", lambda _delay: None)
+    monkeypatch.setattr(
+        "tools.async_delegation.complete_event_delivery",
+        lambda *_args: attempts.append(1) or len(attempts) == 3,
+    )
+
+    assert _retry_deferred_completion_ack(cli, item) is True
+    assert len(attempts) == 3
+    assert cli._pending_input.empty()
+    assert cli._queued_process_notification_claims == []
 
 
 def test_completion_wrapper_reports_durable_ack_result(monkeypatch):

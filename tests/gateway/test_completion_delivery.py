@@ -22,6 +22,7 @@ from gateway.run import (
     _dequeue_typed_internal_followup,
     _mark_deferred_completion_fallback_consumed,
     _renew_deferred_completion_claim,
+    _requeue_typed_followup_after_preprocess_abort,
     _schedule_capped_typed_internal_followup,
     _settle_deferred_completion_deliveries,
     _tag_deferred_completion_fallback,
@@ -712,6 +713,26 @@ def test_recursion_capped_followup_still_drains_after_initial_wait_window(monkey
 
     assert asyncio.run(_run()) == 601
     assert seen == [("late completion evidence", session_key)]
+
+
+def test_preprocess_rejected_typed_completion_can_be_requeued():
+    runner = _runner(SimpleNamespace(handle_message=AsyncMock()))
+    session_key = "agent:main:telegram:dm:12345:678"
+    event = MessageEvent(
+        text="completion with @file:large.log",
+        source=SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="12345",
+            chat_type="dm",
+        ),
+        internal=True,
+        metadata={"internal_event_kind": "subagent_completion"},
+    )
+
+    assert _requeue_typed_followup_after_preprocess_abort(
+        runner, session_key, event
+    ) is True
+    assert _dequeue_typed_internal_followup(runner, session_key) is event
 
 
 def test_failed_recursion_capped_followup_retains_durable_claim():

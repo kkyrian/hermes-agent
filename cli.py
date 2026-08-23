@@ -4970,12 +4970,13 @@ class _VoiceInputMessage:
 class _DeferredCompletionInput:
     """A claimed completion queued for its own durable CLI turn."""
 
-    __slots__ = ("text", "event", "claim")
+    __slots__ = ("text", "event", "claim", "retry_count")
 
     def __init__(self, text: str, event: dict, claim: str):
         self.text = text
         self.event = event
         self.claim = claim
+        self.retry_count = 0
 
     def __str__(self) -> str:
         return self.text
@@ -4987,6 +4988,64 @@ def _deferred_completion_turn_is_durable(cli, chat_result: object) -> bool:
         chat_result is not None
         and getattr(cli, "_last_chat_turn_durable", False)
     )
+
+
+def _forget_queued_deferred_completion(cli, item: _DeferredCompletionInput) -> None:
+    queued = getattr(cli, "_queued_process_notification_claims", None)
+    if isinstance(queued, list):
+        try:
+            queued.remove(item)
+        except ValueError:
+            pass
+
+
+def _schedule_deferred_completion_turn_retry(
+    cli, item: _DeferredCompletionInput, *, max_attempts: int = 5
+) -> bool:
+    """Retry a failed completion turn with bounded exponential backoff."""
+    item.retry_count += 1
+    if item.retry_count > max_attempts:
+        try:
+            from tools.async_delegation import release_event_delivery
+
+            release_event_delivery(item.event, item.claim)
+        finally:
+            _forget_queued_deferred_completion(cli, item)
+        return False
+    delay = min(2 ** (item.retry_count - 1), 30)
+    timer = threading.Timer(delay, cli._pending_input.put, args=(item,))
+    timer.daemon = True
+    timer.start()
+    return True
+
+
+def _retry_deferred_completion_ack(
+    cli, item: _DeferredCompletionInput, *, max_attempts: int = 5
+) -> bool:
+    """Retry only the durable acknowledgement; never rerun the agent turn."""
+    from tools.async_delegation import complete_event_delivery, release_event_delivery
+
+    for attempt in range(max_attempts):
+        if attempt:
+            time.sleep(min(2 ** (attempt - 1), 30))
+        if complete_event_delivery(item.event, item.claim):
+            _forget_queued_deferred_completion(cli, item)
+            return True
+    release_event_delivery(item.event, item.claim)
+    _forget_queued_deferred_completion(cli, item)
+    return False
+
+
+def _schedule_deferred_completion_ack_retry(
+    cli, item: _DeferredCompletionInput
+) -> None:
+    thread = threading.Thread(
+        target=_retry_deferred_completion_ack,
+        args=(cli, item),
+        name="hermes-completion-ack-retry",
+        daemon=True,
+    )
+    thread.start()
 
 
 class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
@@ -20528,18 +20587,19 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                                         exc_info=True,
                                     )
                             if acknowledged:
-                                queued = getattr(
-                                    self,
-                                    "_queued_process_notification_claims",
-                                    None,
+                                _forget_queued_deferred_completion(
+                                    self, deferred_completion_input
                                 )
-                                if isinstance(queued, list):
-                                    try:
-                                        queued.remove(deferred_completion_input)
-                                    except ValueError:
-                                        pass
+                            elif _deferred_completion_turn_is_durable(
+                                self, chat_result
+                            ):
+                                _schedule_deferred_completion_ack_retry(
+                                    self, deferred_completion_input
+                                )
                             else:
-                                self._pending_input.put(deferred_completion_input)
+                                _schedule_deferred_completion_turn_retry(
+                                    self, deferred_completion_input
+                                )
                         self._agent_running = False
                         self._spinner_text = ""
                         self._tool_start_time = 0.0
