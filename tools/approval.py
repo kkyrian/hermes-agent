@@ -469,7 +469,7 @@ _CMDPOS = (
     r'\s*'                          # optional whitespace
     r'(?:sudo\s+(?:-[^\s]+\s+)*)?'  # optional sudo with flags
     r'(?:env\s+(?:\w+=\S*\s+)*)?'   # optional env with VAR=VAL pairs
-    r'(?:(?:exec|nohup|setsid|time)\s+|command\s+(?:-[^\s]+\s+)*)*'  # optional wrapper commands
+    r'(?:(?:exec|nohup|setsid|time)\s+|command\s+(?:-(?![vV](?:\s|$))[^\s]+\s+)*)*'  # optional wrapper commands
     r'(?:(?:nice|ionice)\s+(?:(?:-[^\s]+)(?:\s+[^\s-][^\s]*)?\s+)*)*'
     r'\s*'
 )
@@ -704,6 +704,12 @@ def _iter_dispatched_command_tokens(command: str):
             ).lower()
             if executable in {"command", "busybox"}:
                 index = 1
+                if (
+                    executable == "command"
+                    and index < len(tokens)
+                    and tokens[index] in {"-v", "-V"}
+                ):
+                    continue
                 while index < len(tokens) and tokens[index].startswith("-"):
                     index += 1
                 if index < len(tokens):
@@ -725,6 +731,16 @@ def _iter_dispatched_command_tokens(command: str):
                     yield tokens[index:]
             elif executable == "find":
                 index = 1
+                find_paths = []
+                while index < len(tokens):
+                    token = tokens[index]
+                    if token.startswith("-") or token in {"!", "("}:
+                        break
+                    find_paths.append(token)
+                    index += 1
+                protected_paths = [
+                    path for path in find_paths if _is_protected_find_path(path)
+                ]
                 while index < len(tokens):
                     if tokens[index].lower() not in find_actions:
                         index += 1
@@ -734,7 +750,11 @@ def _iter_dispatched_command_tokens(command: str):
                     while end < len(tokens) and tokens[end] not in {";", "+"}:
                         end += 1
                     if index < end:
-                        yield tokens[index:end]
+                        nested = tokens[index:end]
+                        yield nested
+                        if protected_paths and any("{}" in token for token in nested):
+                            for path in protected_paths:
+                                yield [token.replace("{}", path) for token in nested]
                     index = end + 1
 
 

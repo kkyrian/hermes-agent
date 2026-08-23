@@ -1520,10 +1520,11 @@ class TestAsyncCapUnified(unittest.TestCase):
             "max_spawn_depth": 2,
         },
     )
-    def test_depth_override_does_not_shrink_global_async_unit_cap(self, mock_cfg):
+    def test_depth_override_applies_to_background_unit_cap(self, mock_cfg):
         from tools.delegate_tool import _get_max_async_children
 
         self.assertEqual(_get_max_concurrent_children(1), 1)
+        self.assertEqual(_get_max_async_children(1), 1)
         self.assertEqual(_get_max_async_children(), 8)
 
 # =========================================================================

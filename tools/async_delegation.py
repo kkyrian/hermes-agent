@@ -570,7 +570,13 @@ def complete_completion_delivery(delegation_id: str, claim_id: str) -> bool:
                  AND delivery_claim=?""",
             (now, now, delegation_id, claim_id),
         )
-        return cur.rowcount == 1
+        if cur.rowcount == 1:
+            return True
+        row = conn.execute(
+            "SELECT 1 FROM async_delegations WHERE delegation_id=?",
+            (delegation_id,),
+        ).fetchone()
+        return row is None
 
 
 def complete_event_delivery(evt: Dict[str, Any], claim_id: str) -> bool:

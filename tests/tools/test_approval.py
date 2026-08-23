@@ -820,6 +820,17 @@ class TestExpandedHardlineFloor:
         assert blocked is True
         assert description
 
+    def test_protected_find_exec_recursive_rm_is_hardline(self):
+        blocked, description = detect_hardline_command(
+            "find /home -exec rm -rf {} +"
+        )
+        assert blocked is True
+        assert description
+
+    @pytest.mark.parametrize("flag", ("-v", "-V"))
+    def test_command_lookup_does_not_execute_hardline(self, flag):
+        assert detect_hardline_command(f"command {flag} reboot") == (False, None)
+
     def test_unquoted_heredoc_command_substitution_remains_executable(self):
         command = "cat <<EOF\n$(echo x > /dev/sda)\nEOF"
         blocked, description = detect_hardline_command(command)
