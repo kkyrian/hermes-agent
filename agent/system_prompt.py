@@ -941,12 +941,24 @@ def render_model_visible_context_blocks(
     reset boundary.
     """
     cached = getattr(agent, "_cached_system_prompt_parts", None)
-    if getattr(agent, "_cached_system_prompt", None) and isinstance(cached, dict):
-        return dict(cached)
-    if getattr(agent, "_cached_system_prompt", None):
+    cached_prompt = getattr(agent, "_cached_system_prompt", None)
+    if cached_prompt and isinstance(cached, dict):
+        joined = "\n\n".join(
+            part
+            for part in (
+                cached.get("stable", ""),
+                cached.get("context", ""),
+                cached.get("volatile", ""),
+            )
+            if part
+        )
+        if joined == cached_prompt:
+            return dict(cached)
+    if cached_prompt:
         # A restored prompt is authoritative provider-visible state, but older
-        # session rows do not persist its tier decomposition. Rebuilding tiers
-        # from today's files/config would describe bytes the model cannot see.
+        # session rows and post-build prompt rewrites do not have a trustworthy
+        # tier decomposition. Rebuilding tiers from today's files/config would
+        # describe bytes the model cannot see.
         return {}
     return build_system_prompt_parts(agent, system_message=system_message)
 

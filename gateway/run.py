@@ -3584,14 +3584,19 @@ def _schedule_capped_typed_internal_followup(
 
     async def _drain() -> None:
         try:
-            for _ in range(600):
+            wait_cycles = 0
+            while True:
                 active = getattr(adapter, "_active_sessions", {})
                 if session_key not in active:
                     break
                 await asyncio.sleep(0.05)
-            else:
-                _queue_typed_internal_followup(runner, session_key, event)
-                return
+                wait_cycles += 1
+                if wait_cycles == 600:
+                    logger.info(
+                        "Capped internal follow-up still waiting for active "
+                        "session=%s; retaining autonomous drain",
+                        session_key or "?",
+                    )
             if not runner._is_session_run_current(session_key, run_generation):
                 logger.info(
                     "Discarding stale capped internal follow-up for session=%s generation=%s",

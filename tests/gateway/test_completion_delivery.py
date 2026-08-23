@@ -672,6 +672,48 @@ def test_recursion_capped_internal_followup_is_scheduled_without_user_wakeup():
     ]
 
 
+def test_recursion_capped_followup_still_drains_after_initial_wait_window(monkeypatch):
+    session_key = "agent:main:telegram:dm:12345:678"
+    seen = []
+
+    class _Adapter:
+        _active_sessions = {session_key: asyncio.Event()}
+
+        async def _process_message_background(self, event, key):
+            seen.append((event.text, key))
+
+    async def _run():
+        adapter = _Adapter()
+        runner = _runner(adapter)
+        runner._is_session_run_current = lambda _key, _generation: True
+        sleeps = 0
+
+        async def _advance(_delay):
+            nonlocal sleeps
+            sleeps += 1
+            if sleeps == 601:
+                adapter._active_sessions.pop(session_key, None)
+
+        monkeypatch.setattr(asyncio, "sleep", _advance)
+        event = MessageEvent(
+            text="late completion evidence",
+            source=SessionSource(
+                platform=Platform.TELEGRAM,
+                chat_id="12345",
+                chat_type="dm",
+            ),
+            internal=True,
+        )
+        assert _schedule_capped_typed_internal_followup(
+            runner, adapter, session_key, event, 3
+        ) is True
+        await asyncio.gather(*list(runner._background_tasks))
+        return sleeps
+
+    assert asyncio.run(_run()) == 601
+    assert seen == [("late completion evidence", session_key)]
+
+
 def test_failed_recursion_capped_followup_retains_durable_claim():
     session_key = "agent:main:telegram:dm:12345:678"
 
