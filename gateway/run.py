@@ -4049,14 +4049,49 @@ def _dequeue_typed_internal_followup(
                 and event_generation
                 and event_generation != int(run_generation)
             ):
+                claims = metadata.get("durable_completion_claims")
+                claim_keys = {
+                    (
+                        str(claim.get("delegation_id") or ""),
+                        str(claim.get("claim_id") or ""),
+                    )
+                    for claim in claims
+                    if isinstance(claim, dict)
+                } if isinstance(claims, list) else set()
+                delivery_lock = getattr(
+                    runner, "_completion_delivery_lock", None
+                )
+                active_record = None
+                if delivery_lock is not None and claim_keys:
+                    with delivery_lock:
+                        for record in getattr(
+                            runner, "_deferred_completion_deliveries", {}
+                        ).get(session_key, []):
+                            record_key = (
+                                str(record.get("delegation_id") or ""),
+                                str(record.get("claim_id") or ""),
+                            )
+                            if record_key in claim_keys:
+                                active_record = record
+                                record["generation"] = int(run_generation)
+                                break
+                if active_record is None:
+                    logger.info(
+                        "Discarding retired stale typed internal follow-up for "
+                        "session=%s generation=%s current=%s",
+                        session_key,
+                        event_generation,
+                        run_generation,
+                    )
+                    continue
+                metadata["durable_delivery_generation"] = int(run_generation)
                 logger.info(
-                    "Discarding stale typed internal follow-up for session=%s "
+                    "Retagged durable typed internal follow-up for session=%s "
                     "generation=%s current=%s",
                     session_key,
                     event_generation,
                     run_generation,
                 )
-                continue
             if not queue:
                 queues.pop(session_key, None)
             return event

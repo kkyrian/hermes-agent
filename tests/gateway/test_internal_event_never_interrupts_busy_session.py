@@ -214,6 +214,31 @@ def test_stale_typed_followup_is_not_consumed_by_new_generation() -> None:
     assert _dequeue_typed_internal_followup(runner, sk, 5) is None
 
 
+def test_active_durable_fallback_is_retagged_for_current_generation() -> None:
+    runner = _make_runner()
+    event = _make_internal_event("durable old completion")
+    event.metadata.update({
+        "durable_delivery_generation": 4,
+        "durable_completion_claims": [{
+            "delegation_id": "deleg-4",
+            "claim_id": "claim-4",
+        }],
+    })
+    sk = build_session_key(event.source)
+    record = {
+        "delegation_id": "deleg-4",
+        "claim_id": "claim-4",
+        "generation": 4,
+    }
+    runner._completion_delivery_lock = threading.Lock()
+    runner._deferred_completion_deliveries = {sk: [record]}
+    _queue_typed_internal_followup(runner, sk, event)
+
+    assert _dequeue_typed_internal_followup(runner, sk, 5) is event
+    assert event.metadata["durable_delivery_generation"] == 5
+    assert record["generation"] == 5
+
+
 def test_tagged_deferred_fallback_keeps_origin_generation() -> None:
     from gateway.run import _tag_deferred_completion_fallback
 

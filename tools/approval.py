@@ -738,10 +738,19 @@ def _iter_dispatched_command_tokens(command: str):
                     index = end + 1
 
 
-def _dispatched_hardline_description(command: str) -> str | None:
+_MAX_DISPATCH_INSPECTION_DEPTH = 64
+
+
+def _dispatched_hardline_description(
+    command: str, dispatch_depth: int
+) -> str | None:
     """Return the nested hardline description, when present."""
+    if dispatch_depth >= _MAX_DISPATCH_INSPECTION_DEPTH:
+        return _PARSER_LIMIT_DESCRIPTION
     for tokens in _iter_dispatched_command_tokens(command):
-        blocked, description = detect_hardline_command(shlex.join(tokens))
+        blocked, description = detect_hardline_command(
+            shlex.join(tokens), _dispatch_depth=dispatch_depth + 1
+        )
         if blocked:
             return description
     return None
@@ -1157,7 +1166,7 @@ def _check_sudo_stdin_guard(command: str) -> tuple:
     return (False, None)
 
 
-def detect_hardline_command(command: str) -> tuple:
+def detect_hardline_command(command: str, *, _dispatch_depth: int = 0) -> tuple:
     """Check if a command matches hardline blocklist patterns.
 
     Hardline patterns are NEVER bypassable, even in YOLO mode.
@@ -1172,7 +1181,9 @@ def detect_hardline_command(command: str) -> tuple:
     if malformed_grep:
         return (True, _MALFORMED_EXEC_DESCRIPTION)
     for command_variant in _command_detection_variants(command):
-        dispatched = _dispatched_hardline_description(command_variant)
+        dispatched = _dispatched_hardline_description(
+            command_variant, _dispatch_depth
+        )
         if dispatched:
             return (True, dispatched)
         if _has_unquoted_raw_device_redirection(command_variant):
