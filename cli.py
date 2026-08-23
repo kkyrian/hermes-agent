@@ -4981,6 +4981,14 @@ class _DeferredCompletionInput:
         return self.text
 
 
+def _deferred_completion_turn_is_durable(cli, chat_result: object) -> bool:
+    """Only retire a claimed completion after a successful durable turn."""
+    return bool(
+        chat_result is not None
+        and getattr(cli, "_last_chat_turn_durable", False)
+    )
+
+
 class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
     """
     Interactive CLI for the Hermes Agent.
@@ -16264,6 +16272,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         Returns:
             The agent's response, or None on error
         """
+        self._last_chat_turn_durable = False
+
         # Single-query and direct chat callers do not go through run(), so
         # register secure secret capture here as well.
         set_secret_capture_callback(self._secret_capture_callback)
@@ -17079,6 +17089,11 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 print(f"\n⏩ Delivering leftover /steer as next turn: '{preview}'")
                 self._pending_input.put(_leftover_steer)
 
+            self._last_chat_turn_durable = bool(
+                isinstance(result, dict)
+                and not result.get("failed")
+                and not getattr(agent, "_incremental_persistence_failed", False)
+            )
             return response
             
         except Exception as e:
@@ -20495,7 +20510,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                     finally:
                         if deferred_completion_input is not None:
                             acknowledged = False
-                            if chat_result is not None:
+                            if _deferred_completion_turn_is_durable(
+                                self, chat_result
+                            ):
                                 try:
                                     from tools.async_delegation import (
                                         complete_event_delivery,

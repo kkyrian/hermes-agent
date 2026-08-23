@@ -180,6 +180,41 @@ async def test_subagent_completion_enters_busy_parent_mailbox() -> None:
 
 
 @pytest.mark.asyncio
+async def test_session_reset_race_does_not_admit_into_stale_parent() -> None:
+    runner = _make_runner()
+    runner._busy_input_mode = "interrupt"
+    adapter = _make_adapter()
+    event = _make_internal_event("completion racing with reset")
+    event.metadata["internal_event_kind"] = "subagent_completion"
+    sk = build_session_key(event.source)
+    old_parent = _make_running_parent()
+    new_parent = _make_running_parent()
+    old_state = MagicMock()
+    old_state.persistent.run_generation = 7
+    old_state.turn.agent = old_parent
+    new_state = MagicMock()
+    new_state.persistent.run_generation = 8
+    new_state.turn.agent = new_parent
+    runner._peek_session_state = MagicMock(side_effect=[old_state, new_state])
+    runner.adapters[event.source.platform] = adapter
+
+    assert await runner._handle_active_session_busy_message(event, sk) is True
+    old_parent.enqueue_internal_event.assert_not_called()
+    assert event.metadata["durable_delivery_generation"] == 7
+    assert _dequeue_typed_internal_followup(runner, sk) is event
+
+
+def test_stale_typed_followup_is_not_consumed_by_new_generation() -> None:
+    runner = _make_runner()
+    event = _make_internal_event("old completion")
+    event.metadata["durable_delivery_generation"] = 4
+    sk = build_session_key(event.source)
+    _queue_typed_internal_followup(runner, sk, event)
+
+    assert _dequeue_typed_internal_followup(runner, sk, 5) is None
+
+
+@pytest.mark.asyncio
 async def test_rejected_subagent_admission_uses_separate_typed_followup_queue() -> None:
     runner = _make_runner()
     runner._busy_input_mode = "interrupt"

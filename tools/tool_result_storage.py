@@ -65,6 +65,7 @@ SPILLOVER_SUBDIR = "cache/spillover"
 SPILLOVER_MAX_AGE_HOURS = 24
 HEREDOC_MARKER = "HERMES_PERSIST_EOF"
 _BUDGET_TOOL_NAME = "__budget_enforcement__"
+TRUSTED_BUDGET_EVIDENCE_KEY = "_trusted_budget_evidence"
 _UNSAFE_RESULT_FILENAME_CHARS = re.compile(r"[^A-Za-z0-9_.-]+")
 _MAX_RESULT_FILENAME_STEM = 120
 
@@ -415,7 +416,7 @@ def enforce_turn_budget(
         content = msg.get("content", "")
         size = len(content)
         total_size += size
-        if PERSISTED_OUTPUT_TAG not in content:
+        if not msg.get(TRUSTED_BUDGET_EVIDENCE_KEY):
             candidates.append((i, size))
 
     if total_size <= config.turn_budget:
@@ -442,6 +443,7 @@ def enforce_turn_budget(
             total_size -= size
             total_size += len(replacement)
             tool_messages[idx]["content"] = replacement
+            tool_messages[idx][TRUSTED_BUDGET_EVIDENCE_KEY] = True
             logger.info(
                 "Budget enforcement: persisted tool result %s (%d chars)",
                 tool_use_id, size,

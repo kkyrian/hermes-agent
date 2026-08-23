@@ -47,6 +47,7 @@ from tools.terminal_tool import (
 )
 from tools.thread_context import propagate_context_to_thread
 from tools.tool_result_storage import (
+    TRUSTED_BUDGET_EVIDENCE_KEY,
     maybe_persist_tool_result,
     enforce_turn_budget,
     extract_persisted_path,
@@ -241,14 +242,14 @@ def _finalize_tool_result_batch(
     return bool(has_context_hook)
 
 
-def _persist_final_tool_result_batch(agent, tool_messages: list[dict]) -> None:
+def _persist_final_tool_result_batch(agent, tool_messages: list[dict]) -> bool:
     """Backfill finalized tool rows so durable replay matches provider input."""
     for message in tool_messages:
         message.pop("_mandatory_spill_failure", None)
     session_db = getattr(agent, "_session_db", None)
     session_id = getattr(agent, "session_id", None)
     if session_db is None or not session_id:
-        return
+        return True
 
     for message in tool_messages:
         tool_call_id = str(message.get("tool_call_id") or "")
@@ -276,7 +277,8 @@ def _persist_final_tool_result_batch(agent, tool_messages: list[dict]) -> None:
         if updated != 1:
             agent._incremental_persistence_failed = True
             agent._last_persistence_error_cause = persistence_cause
-            return
+            return False
+    return True
 
 
 def _finalize_tool_boundary(
@@ -432,12 +434,12 @@ def _rebudget_tool_bases_preserving_suffixes(
             "role": "tool",
             "tool_call_id": message.get("tool_call_id", f"base_{index}"),
             "content": _text_content(base),
+            TRUSTED_BUDGET_EVIDENCE_KEY: bool(
+                message.get(TRUSTED_BUDGET_EVIDENCE_KEY)
+            ),
         })
     def _has_budget_evidence(item: dict) -> bool:
-        return (
-            "<persisted-output>" in item["content"]
-            or "Truncated:" in item["content"]
-        )
+        return bool(item.get(TRUSTED_BUDGET_EVIDENCE_KEY))
 
     budgetable_base_messages = [
         item for item in base_messages if not _has_budget_evidence(item)
@@ -538,6 +540,9 @@ def _rebudget_tool_bases_preserving_suffixes(
         else:
             blocks = _restore_multimodal_base(base, budgeted_base)
             message["content"] = blocks + suffix["authority"] + suffix["hook"]
+
+    for message in tool_messages:
+        message.pop(TRUSTED_BUDGET_EVIDENCE_KEY, None)
 
 # Maximum number of concurrent worker threads for parallel tool execution.
 # Mirrors the constant in ``run_agent`` for tests/imports that look here.
@@ -2247,6 +2252,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
         agent._touch_activity(f"tool completed: {name} ({tool_duration:.1f}s){_status_suffix}")
 
         display_function_result = function_result
+        _pre_budget_function_result = function_result
         function_result = maybe_persist_tool_result(
             content=function_result,
             tool_name=name,
@@ -2286,6 +2292,8 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
             tc.id,
             effect_disposition=effect_disposition,
         )
+        if function_result != _pre_budget_function_result:
+            tool_message[TRUSTED_BUDGET_EVIDENCE_KEY] = True
         messages.append(tool_message)
         risk_metadata = tool_message.get("_tool_output_risk")
         if not _flush_session_db_after_tool_progress(
@@ -3229,6 +3237,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
             logging.debug("Tool result (%d chars): %s", len(_log_result), _log_result)
 
         display_function_result = function_result
+        _pre_budget_function_result = function_result
         function_result = maybe_persist_tool_result(
             content=function_result,
             tool_name=function_name,
@@ -3261,6 +3270,8 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
             tool_call.id,
             effect_disposition="unknown" if _execution_timed_out else None,
         )
+        if function_result != _pre_budget_function_result:
+            tool_message[TRUSTED_BUDGET_EVIDENCE_KEY] = True
         messages.append(tool_message)
         risk_metadata = tool_message.get("_tool_output_risk")
         if not _flush_session_db_after_tool_progress(
