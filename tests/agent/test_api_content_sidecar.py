@@ -671,6 +671,8 @@ class TestPrologueMoaAndInPlaceBackfill:
         the existing row directly."""
         agent = _FakeAgent()
         agent.compression_enabled = True
+        agent._active_session_turn_lease_holder = "active-holder"
+        agent._active_session_turn_lease_ttl_seconds = 123.0
         agent._session_db = MagicMock()
         agent._session_db.set_latest_user_api_content.return_value = 1
 
@@ -721,7 +723,11 @@ class TestPrologueMoaAndInPlaceBackfill:
         assert msg["content"] == "hello"
         assert msg["api_content"] == "hello\n\nPLUGIN-CTX"
         agent._session_db.set_latest_user_api_content.assert_called_once_with(
-            "sess-1", "hello", "hello\n\nPLUGIN-CTX"
+            "sess-1",
+            "hello",
+            "hello\n\nPLUGIN-CTX",
+            turn_lease_holder="active-holder",
+            turn_lease_ttl_seconds=123.0,
         )
 
     def test_inplace_compaction_backfills_multimodal_hook_content_into_db(self):
@@ -918,6 +924,26 @@ class TestSetLatestUserApiContent:
                     turn_lease_holder="old-holder",
                 )
             assert db.get_messages_as_conversation("s1")[0]["content"] == original
+        finally:
+            db.close()
+
+    def test_api_content_backfill_rejects_stale_turn_lease(self, tmp_path):
+        from hermes_state import SessionTurnLeaseLostError
+
+        db = self._open(tmp_path)
+        try:
+            db.append_message("s1", "user", content="new owner")
+            assert db.try_acquire_session_turn_lease("s1", "old-holder") is True
+            db.release_session_turn_lease("s1", "old-holder")
+            assert db.try_acquire_session_turn_lease("s1", "new-holder") is True
+            with pytest.raises(SessionTurnLeaseLostError):
+                db.set_latest_user_api_content(
+                    "s1",
+                    "new owner",
+                    "stale owner context",
+                    turn_lease_holder="old-holder",
+                )
+            assert db.get_messages("s1")[0]["api_content"] is None
         finally:
             db.close()
 

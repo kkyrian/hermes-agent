@@ -5066,7 +5066,11 @@ class AIAgent:
 
         Returns the original list if no truncation was needed.
         """
-        from tools.delegate_tool import _get_max_concurrent_children
+        from tools.delegate_tool import (
+            _CONTROL_ACTIONS,
+            _get_max_concurrent_children,
+            _recover_tasks_from_json_string,
+        )
         max_children = (
             _get_max_concurrent_children()
             if depth is None else _get_max_concurrent_children(depth)
@@ -5080,12 +5084,21 @@ class AIAgent:
                 return max_children + 1
             if not isinstance(arguments, dict):
                 return max_children + 1
+            action = str(arguments.get("action") or "").strip().lower()
+            if action in _CONTROL_ACTIONS:
+                return 0
             tasks = arguments.get("tasks")
-            if tasks is None:
-                return 1
-            if not isinstance(tasks, list):
+            recovered_tasks, tasks_error = _recover_tasks_from_json_string(tasks)
+            if tasks_error:
                 return max_children + 1
-            return len(tasks)
+            if recovered_tasks is not None:
+                tasks = recovered_tasks
+            if isinstance(tasks, list) and tasks:
+                return len(tasks)
+            goal = arguments.get("goal")
+            if isinstance(goal, str) and goal.strip():
+                return 1
+            return max_children + 1
 
         delegate_count = sum(_delegate_children(tc) for tc in tool_calls)
         if delegate_count <= max_children:
@@ -8863,22 +8876,19 @@ class AIAgent:
                         "Session is free; loading the latest transcript..."
                     )
 
-                # The holder may have compressed and rotated the session while
-                # this process waited. Resolve and reload only AFTER admission;
-                # a caller-provided in-memory snapshot is necessarily stale.
-                # Skip when acquisition was immediate — no other process held
-                # the lease, so the in-memory history is current and reloading
-                # would only cause an unnecessary prompt cache miss.
-                if _lease_waited:
-                    latest_session_id = _turn_db.resolve_resume_session_id(session_id)
-                    if latest_session_id:
-                        self.session_id = latest_session_id
-                        task_context["session_id"] = latest_session_id
-                    conversation_history = _turn_db.get_messages_as_conversation(
-                        self.session_id,
-                        repair_alternation=True,
-                        include_row_ids=True,
-                    )
+                # Resolve and reload only AFTER admission. Immediate acquisition
+                # proves the session is idle now, not that this long-lived
+                # process's cached transcript includes the previous owner's
+                # completed turn.
+                latest_session_id = _turn_db.resolve_resume_session_id(session_id)
+                if latest_session_id:
+                    self.session_id = latest_session_id
+                    task_context["session_id"] = latest_session_id
+                conversation_history = _turn_db.get_messages_as_conversation(
+                    self.session_id,
+                    repair_alternation=True,
+                    include_row_ids=True,
+                )
 
                 # Long model/tool/compression turns outlive a fixed TTL. Refresh
                 # in a daemon thread; holder-qualified UPDATE and DELETE fence a
