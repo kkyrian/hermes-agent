@@ -10104,7 +10104,13 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         return cols
 
     def set_latest_user_api_content(
-        self, session_id: str, content: Any, api_content: str
+        self,
+        session_id: str,
+        content: Any,
+        api_content: str,
+        *,
+        turn_lease_holder: Optional[str] = None,
+        turn_lease_ttl_seconds: float = 300.0,
     ) -> int:
         """Backfill the ``api_content`` sidecar onto the newest ACTIVE user row.
 
@@ -10123,6 +10129,13 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         encoded = self._encode_content(content)
 
         def _do(conn):
+            self._check_transcript_write_guards(
+                conn,
+                session_id,
+                None,
+                turn_lease_holder,
+                turn_lease_ttl_seconds,
+            )
             cursor = conn.execute(
                 "UPDATE messages SET api_content = ? WHERE id = ("
                 "SELECT id FROM messages "

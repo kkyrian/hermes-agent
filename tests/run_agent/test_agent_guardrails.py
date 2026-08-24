@@ -132,7 +132,7 @@ class TestCapDelegateTaskCalls:
             "tools.delegate_tool._get_max_concurrent_children",
             lambda depth=None: 2 if depth == 1 else MAX_CONCURRENT_CHILDREN,
         )
-        tcs = [make_tc("delegate_task") for _ in range(4)]
+        tcs = [make_tc("delegate_task", '{"goal":"work"}') for _ in range(4)]
         out = AIAgent._cap_delegate_task_calls(tcs, depth=1)
         assert len(out) == 2
 
@@ -158,15 +158,44 @@ class TestCapDelegateTaskCalls:
 
         assert AIAgent._cap_delegate_task_calls([malformed, terminal]) == [terminal]
 
+    def test_empty_batch_with_goal_charges_one_child(self, monkeypatch):
+        monkeypatch.setattr(
+            "tools.delegate_tool._get_max_concurrent_children",
+            lambda depth=None: 1,
+        )
+        first = make_tc("delegate_task", '{"goal":"first","tasks":[]}')
+        second = make_tc("delegate_task", '{"goal":"second","tasks":[]}')
+
+        assert AIAgent._cap_delegate_task_calls([first, second]) == [first]
+
+    def test_json_string_batch_uses_recovered_task_count(self, monkeypatch):
+        monkeypatch.setattr(
+            "tools.delegate_tool._get_max_concurrent_children",
+            lambda depth=None: 2,
+        )
+        batch = make_tc(
+            "delegate_task",
+            '{"tasks":"[{\\"goal\\":\\"first child\\"},{\\"goal\\":\\"second child\\"}]"}',
+        )
+        extra = make_tc("delegate_task", '{"goal":"third"}')
+
+        assert AIAgent._cap_delegate_task_calls([batch, extra]) == [batch]
+
     def test_excess_delegates_truncated(self):
-        tcs = [make_tc("delegate_task") for _ in range(MAX_CONCURRENT_CHILDREN + 2)]
+        tcs = [
+            make_tc("delegate_task", '{"goal":"work"}')
+            for _ in range(MAX_CONCURRENT_CHILDREN + 2)
+        ]
         out = AIAgent._cap_delegate_task_calls(tcs)
         delegate_count = sum(1 for tc in out if tc.function.name == "delegate_task")
         assert delegate_count == MAX_CONCURRENT_CHILDREN
 
     def test_non_delegate_calls_preserved(self):
         tcs = (
-            [make_tc("delegate_task") for _ in range(MAX_CONCURRENT_CHILDREN + 1)]
+            [
+                make_tc("delegate_task", '{"goal":"work"}')
+                for _ in range(MAX_CONCURRENT_CHILDREN + 1)
+            ]
             + [make_tc("terminal"), make_tc("web_search")]
         )
         out = AIAgent._cap_delegate_task_calls(tcs)
@@ -175,7 +204,10 @@ class TestCapDelegateTaskCalls:
         assert "web_search" in names
 
     def test_at_limit_passes_through(self):
-        tcs = [make_tc("delegate_task") for _ in range(MAX_CONCURRENT_CHILDREN)]
+        tcs = [
+            make_tc("delegate_task", '{"goal":"work"}')
+            for _ in range(MAX_CONCURRENT_CHILDREN)
+        ]
         out = AIAgent._cap_delegate_task_calls(tcs)
         assert out is tcs
 
@@ -186,7 +218,7 @@ class TestCapDelegateTaskCalls:
 
 
     def test_interleaved_order_preserved(self):
-        delegates = [make_tc("delegate_task", f'{{"task":"{i}"}}')
+        delegates = [make_tc("delegate_task", f'{{"goal":"{i}"}}')
                      for i in range(MAX_CONCURRENT_CHILDREN + 1)]
         t1 = make_tc("terminal", '{"cmd":"ls"}')
         w1 = make_tc("web_search", '{"q":"x"}')

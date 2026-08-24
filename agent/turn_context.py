@@ -1529,10 +1529,27 @@ def build_turn_context(
                 _db = getattr(agent, "_session_db", None)
                 if _db is not None:
                     try:
+                        lease_holder = getattr(
+                            agent, "_active_session_turn_lease_holder", None
+                        )
+                        kwargs = {}
+                        if lease_holder:
+                            kwargs = {
+                                "turn_lease_holder": lease_holder,
+                                "turn_lease_ttl_seconds": (
+                                    getattr(
+                                        agent,
+                                        "_active_session_turn_lease_ttl_seconds",
+                                        300.0,
+                                    )
+                                    or 300.0
+                                ),
+                            }
                         updated = _db.set_latest_user_api_content(
                             agent.session_id,
                             _turn_user_msg.get("content"),
                             _api_content,
+                            **kwargs,
                         )
                         if updated != 1:
                             persistence_failed = True
