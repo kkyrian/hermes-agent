@@ -46,6 +46,80 @@ def test_failed_completion_turn_retries_with_backoff_not_immediate_requeue(monke
     assert cli._pending_input.get_nowait() is item
 
 
+def test_exhausted_completion_turn_retry_requeues_before_releasing(monkeypatch):
+    cli = HermesCLI.__new__(HermesCLI)
+    cli._pending_input = queue.Queue()
+    event = {"type": "async_delegation", "delegation_id": "d1"}
+    item = _DeferredCompletionInput("completion", event, "claim")
+    cli._queued_process_notification_claims = [item]
+    completion_queue = queue.Queue()
+    released = []
+    monkeypatch.setattr(
+        "tools.process_registry.process_registry.completion_queue",
+        completion_queue,
+    )
+    monkeypatch.setattr(
+        "tools.async_delegation.release_event_delivery",
+        lambda evt, claim: released.append((evt, claim)) or True,
+    )
+
+    assert _schedule_deferred_completion_turn_retry(
+        cli, item, max_attempts=0
+    ) is False
+
+    assert completion_queue.get_nowait() is event
+    assert released == [(event, "claim")]
+    assert cli._queued_process_notification_claims == []
+
+
+def test_failed_admitted_completion_requeues_before_releasing(monkeypatch):
+    cli = HermesCLI.__new__(HermesCLI)
+    event = {"type": "async_delegation", "delegation_id": "d1"}
+    cli._admitted_process_notification_claims = [
+        (event, "claim", "completion")
+    ]
+    cli._stop_admitted_process_notification_renewal = MagicMock()
+    completion_queue = queue.Queue()
+    released = []
+    monkeypatch.setattr(
+        "tools.process_registry.process_registry.completion_queue",
+        completion_queue,
+    )
+    monkeypatch.setattr(
+        "tools.async_delegation.release_event_delivery",
+        lambda evt, claim: released.append((evt, claim)) or True,
+    )
+
+    cli._settle_admitted_process_notifications(None)
+
+    assert completion_queue.get_nowait() is event
+    assert released == [(event, "claim")]
+
+
+def test_failed_result_requeues_admitted_completion_before_releasing(monkeypatch):
+    cli = HermesCLI.__new__(HermesCLI)
+    event = {"type": "async_delegation", "delegation_id": "d1"}
+    cli._admitted_process_notification_claims = [
+        (event, "claim", "completion")
+    ]
+    cli._stop_admitted_process_notification_renewal = MagicMock()
+    completion_queue = queue.Queue()
+    released = []
+    monkeypatch.setattr(
+        "tools.process_registry.process_registry.completion_queue",
+        completion_queue,
+    )
+    monkeypatch.setattr(
+        "tools.async_delegation.release_event_delivery",
+        lambda evt, claim: released.append((evt, claim)) or True,
+    )
+
+    cli._settle_admitted_process_notifications({"failed": True})
+
+    assert completion_queue.get_nowait() is event
+    assert released == [(event, "claim")]
+
+
 def test_durable_completion_ack_retry_never_requeues_agent_turn(monkeypatch):
     cli = HermesCLI.__new__(HermesCLI)
     cli._pending_input = queue.Queue()
