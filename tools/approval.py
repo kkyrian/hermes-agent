@@ -954,7 +954,13 @@ def _has_destructive_raw_device_operation(command: str) -> bool:
             operands.append(token)
         if command_name in {"blkdiscard", "shred", "tee"}:
             if command_name == "blkdiscard" and any(
-                token in {"-n", "--dry-run"} for token in tokens
+                token == "--dry-run"
+                or (
+                    token.startswith("-")
+                    and not token.startswith("--")
+                    and "n" in token[1:].lower()
+                )
+                for token in tokens
             ):
                 continue
             if any(
@@ -1034,7 +1040,8 @@ def _has_lexically_protected_find_delete(command: str) -> bool:
             ):
                 selector = tokens[index + 1]
                 literal = re.sub(r"[.*?\[\]{}()^$+|\\]", "", selector)
-                if literal:
+                selector_root = literal.rstrip("/") or "/"
+                if literal and not _is_protected_find_path(selector_root):
                     has_narrowing_before_delete = True
             if token_lower in one_arg_predicates:
                 index += 2
@@ -1075,7 +1082,15 @@ def _has_destructive_wipefs(command: str) -> bool:
             tokens = shlex.split(match.group("args"), posix=True)
         except ValueError:
             continue
-        if any(token in {"-n", "--no-act"} for token in tokens):
+        if any(
+            token == "--no-act"
+            or (
+                token.startswith("-")
+                and not token.startswith("--")
+                and "n" in token[1:].lower()
+            )
+            for token in tokens
+        ):
             continue
         if not any(
             token == "--all"
@@ -1128,7 +1143,13 @@ def _has_destructive_storage_layer_removal(command: str) -> bool:
         if any(token in {"--help", "-h", "-?"} for token in tokens):
             continue
         if command_name != "zpool destroy" and any(
-            token in {"--test", "-t"} for token in tokens
+            token == "--test"
+            or (
+                token.startswith("-")
+                and not token.startswith("--")
+                and "t" in token[1:].lower()
+            )
+            for token in tokens
         ):
             continue
         end_of_options = False

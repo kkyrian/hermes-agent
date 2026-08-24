@@ -419,6 +419,37 @@ def test_later_turn_requeues_deferred_payload_before_ack(monkeypatch):
     assert acknowledgements == ["deleg_old_turn"]
 
 
+def test_failed_admitting_turn_queues_claimed_completion_fallback():
+    runner = _runner(SimpleNamespace(handle_message=AsyncMock()))
+    runner._typed_internal_followups = {}
+    session_key = "agent:main:telegram:dm:12345:678"
+    record = {
+        "text": "completion evidence",
+        "delegation_id": "deleg-failed-turn",
+        "claim_id": "claim-failed-turn",
+        "generation": 7,
+        "source": SessionSource(
+            platform=Platform.TELEGRAM, chat_id="12345", chat_type="dm"
+        ),
+        "parent_session_id": "",
+        "fallback_queued": False,
+        "siblings": [],
+    }
+    runner._deferred_completion_deliveries = {session_key: [record]}
+
+    asyncio.run(
+        _settle_deferred_completion_deliveries(
+            runner, session_key, 7, {}, turn_completed=False
+        )
+    )
+
+    queued = runner._typed_internal_followups[session_key]
+    assert [event.text for event in queued] == ["completion evidence"]
+    assert queued[0].metadata["delivery"] == "deferred_failed_turn_fallback"
+    assert record["fallback_queued"] is True
+    assert runner._deferred_completion_deliveries[session_key] == [record]
+
+
 def test_same_generation_user_turn_does_not_ack_queued_completion(monkeypatch):
     from tools import async_delegation
 

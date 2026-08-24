@@ -5005,6 +5005,9 @@ def _schedule_deferred_completion_turn_retry(
     """Retry a failed completion turn with bounded exponential backoff."""
     item.retry_count += 1
     if item.retry_count > max_attempts:
+        from tools.process_registry import process_registry
+
+        process_registry.completion_queue.put(item.event)
         try:
             from tools.async_delegation import release_event_delivery
 
@@ -13018,8 +13021,11 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         )
 
         if not isinstance(result, dict):
+            from tools.process_registry import process_registry
+
             for event, claim, _message in claims:
                 try:
+                    process_registry.completion_queue.put(event)
                     release_event_delivery(event, claim)
                 except Exception:
                     logging.debug(
@@ -13051,6 +13057,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 continue
             elif turn_failed:
                 try:
+                    from tools.process_registry import process_registry
+
+                    process_registry.completion_queue.put(event)
                     release_event_delivery(event, claim)
                 except Exception:
                     logging.debug(

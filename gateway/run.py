@@ -3973,8 +3973,23 @@ async def _settle_deferred_completion_deliveries(
             continue
         elif not turn_completed:
             # The admitting turn did not return and its exact payload was not
-            # harvested into the fallback queue. Keep the durable claim for
-            # lease expiry/replay rather than letting another turn ack it.
+            # harvested. Queue the claimed payload locally before retaining
+            # and renewing it; renewal otherwise prevents the claimed row from
+            # ever reaching lease-expiry recovery while the gateway stays up.
+            source = record.get("source")
+            if not record.get("fallback_queued") and source is not None:
+                event = MessageEvent(
+                    text=record["text"],
+                    source=source,
+                    internal=True,
+                    metadata={
+                        "internal_event_kind": "subagent_completion",
+                        "delivery": "deferred_failed_turn_fallback",
+                    },
+                )
+                _tag_deferred_completion_fallback(event, record)
+                _queue_typed_internal_followup(runner, session_key, event)
+                record["fallback_queued"] = True
             remaining.append(record)
             continue
 
