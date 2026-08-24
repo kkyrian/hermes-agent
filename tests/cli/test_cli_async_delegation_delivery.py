@@ -159,6 +159,48 @@ def test_durable_completion_ack_retry_survives_transient_exception(monkeypatch):
     assert cli._queued_process_notification_claims == []
 
 
+def test_exhausted_durable_ack_retry_retains_claim_and_schedules_ack_only(monkeypatch):
+    cli = HermesCLI.__new__(HermesCLI)
+    cli._pending_input = queue.Queue()
+    event = {"type": "async_delegation", "delegation_id": "d1"}
+    item = _DeferredCompletionInput("completion", event, "claim")
+    cli._queued_process_notification_claims = [item]
+    released = []
+    renewed = []
+    scheduled = []
+
+    class _Timer:
+        daemon = False
+
+        def __init__(self, delay, callback, args=()):
+            scheduled.append((delay, callback, args))
+
+        def start(self):
+            pass
+
+    monkeypatch.setattr("cli.time.sleep", lambda _delay: None)
+    monkeypatch.setattr("cli.threading.Timer", _Timer)
+    monkeypatch.setattr(
+        "tools.async_delegation.complete_event_delivery", lambda *_args: False
+    )
+    monkeypatch.setattr(
+        "tools.async_delegation.renew_completion_delivery",
+        lambda delegation_id, claim: renewed.append((delegation_id, claim)) or True,
+    )
+    monkeypatch.setattr(
+        "tools.async_delegation.release_event_delivery",
+        lambda *args: released.append(args),
+    )
+
+    assert _retry_deferred_completion_ack(cli, item, max_attempts=1) is False
+
+    assert released == []
+    assert cli._pending_input.empty()
+    assert cli._queued_process_notification_claims == [item]
+    assert renewed == [("d1", "claim")]
+    assert scheduled == [(30, _retry_deferred_completion_ack, (cli, item))]
+
+
 def test_admitted_completion_ack_failure_schedules_ack_only_retry(monkeypatch):
     cli = HermesCLI.__new__(HermesCLI)
     cli._pending_input = queue.Queue()

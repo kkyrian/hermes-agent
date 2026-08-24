@@ -5071,20 +5071,37 @@ class AIAgent:
             _get_max_concurrent_children()
             if depth is None else _get_max_concurrent_children(depth)
         )
-        delegate_count = sum(1 for tc in tool_calls if tc.function.name == "delegate_task")
+        def _delegate_children(tc) -> int:
+            if tc.function.name != "delegate_task":
+                return 0
+            try:
+                arguments = json.loads(tc.function.arguments)
+            except (TypeError, ValueError):
+                return max_children + 1
+            if not isinstance(arguments, dict):
+                return max_children + 1
+            tasks = arguments.get("tasks")
+            if tasks is None:
+                return 1
+            if not isinstance(tasks, list):
+                return max_children + 1
+            return len(tasks)
+
+        delegate_count = sum(_delegate_children(tc) for tc in tool_calls)
         if delegate_count <= max_children:
             return tool_calls
-        kept_delegates = 0
+        kept_children = 0
         truncated = []
         for tc in tool_calls:
             if tc.function.name == "delegate_task":
-                if kept_delegates < max_children:
+                child_count = _delegate_children(tc)
+                if kept_children + child_count <= max_children:
                     truncated.append(tc)
-                    kept_delegates += 1
+                    kept_children += child_count
             else:
                 truncated.append(tc)
         logger.warning(
-            "Truncated %d excess delegate_task call(s) to enforce "
+            "Truncated delegate_task calls representing %d excess child(ren) to enforce "
             "max_concurrent_children=%d limit",
             delegate_count - max_children, max_children,
         )

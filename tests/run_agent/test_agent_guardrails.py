@@ -136,6 +136,28 @@ class TestCapDelegateTaskCalls:
         out = AIAgent._cap_delegate_task_calls(tcs, depth=1)
         assert len(out) == 2
 
+    def test_batched_calls_charge_each_child_against_depth_cap(self, monkeypatch):
+        monkeypatch.setattr(
+            "tools.delegate_tool._get_max_concurrent_children",
+            lambda depth=None: 2,
+        )
+        first = make_tc("delegate_task", '{"tasks":[{"goal":"a"},{"goal":"b"}]}')
+        second = make_tc("delegate_task", '{"tasks":[{"goal":"c"},{"goal":"d"}]}')
+
+        out = AIAgent._cap_delegate_task_calls([first, second], depth=1)
+
+        assert out == [first]
+
+    def test_malformed_delegate_arguments_fail_closed(self, monkeypatch):
+        monkeypatch.setattr(
+            "tools.delegate_tool._get_max_concurrent_children",
+            lambda depth=None: 2,
+        )
+        malformed = make_tc("delegate_task", "{")
+        terminal = make_tc("terminal")
+
+        assert AIAgent._cap_delegate_task_calls([malformed, terminal]) == [terminal]
+
     def test_excess_delegates_truncated(self):
         tcs = [make_tc("delegate_task") for _ in range(MAX_CONCURRENT_CHILDREN + 2)]
         out = AIAgent._cap_delegate_task_calls(tcs)

@@ -997,6 +997,35 @@ class TestSkillPromptExposure:
         assert "    - future-skill\n" in result
         assert "Future description" not in result
 
+    @pytest.mark.parametrize("prompt_exposure", ([], "description", True))
+    def test_malformed_prompt_exposure_policy_hides_all_skills(
+        self, monkeypatch, tmp_path, prompt_exposure
+    ):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        self._write_skill(tmp_path, "secret-skill", "Do not expose")
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config_readonly",
+            lambda: {"skills": {"prompt_exposure": prompt_exposure}},
+        )
+
+        assert "secret-skill" not in build_skills_system_prompt()
+
+    @pytest.mark.parametrize("tier_key", ("hidden", "names_only", "descriptions"))
+    def test_malformed_prompt_exposure_tier_container_hides_all_skills(
+        self, monkeypatch, tmp_path, tier_key
+    ):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        self._write_skill(tmp_path, "secret-skill", "Do not expose")
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config_readonly",
+            lambda: {"skills": {"prompt_exposure": {
+                "default": "description",
+                tier_key: {"secret-skill": True},
+            }}},
+        )
+
+        assert "secret-skill" not in build_skills_system_prompt()
+
     def test_duplicate_membership_fails_closed(self, monkeypatch, tmp_path):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         self._write_skill(tmp_path, "ambiguous", "Do not expose")
