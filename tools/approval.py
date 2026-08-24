@@ -688,6 +688,13 @@ def _has_dd_to_raw_device(command: str) -> bool:
 
 def _iter_dispatched_command_tokens(command: str):
     """Yield argv launched by common shell command dispatchers."""
+    wrapper_options_with_arg = {
+        "nice": {"-n", "--adjustment"},
+        "ionice": {
+            "-c", "--class", "-n", "--classdata", "-p", "--pid",
+            "-P", "--pgid", "-u", "--uid",
+        },
+    }
     xargs_options_with_arg = {
         "-a", "--arg-file", "-d", "--delimiter", "-e", "-E", "--eof",
         "-I", "--replace", "-L", "--max-lines", "-n", "--max-args",
@@ -702,7 +709,33 @@ def _iter_dispatched_command_tokens(command: str):
             executable = os.path.basename(
                 _deobfuscate_shell_word_for_detection(word)
             ).lower()
-            if executable in {"command", "busybox"}:
+            if executable in wrapper_options_with_arg:
+                index = 1
+                while index < len(tokens):
+                    token = tokens[index]
+                    option, value = _split_option(token)
+                    if token == "--":
+                        index += 1
+                        break
+                    if not token.startswith("-") or token == "-":
+                        break
+                    index += 1
+                    compact_arg = (
+                        executable == "nice"
+                        and re.fullmatch(r"-(?:n)?\d+", token)
+                    ) or (
+                        executable == "ionice"
+                        and re.fullmatch(r"-[cnpPu].+", token)
+                    )
+                    if (
+                        not compact_arg
+                        and option in wrapper_options_with_arg[executable]
+                        and value is None
+                    ):
+                        index += 1
+                if index < len(tokens):
+                    yield tokens[index:]
+            elif executable in {"command", "busybox"}:
                 index = 1
                 if (
                     executable == "command"
