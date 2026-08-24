@@ -595,6 +595,46 @@ def test_deferred_claim_retries_after_transient_renewal_error(monkeypatch):
     assert "lost_renewal_claims" not in record
 
 
+def test_conversation_boundary_drops_deferred_completion_claims(monkeypatch):
+    from tools import async_delegation
+
+    runner = _runner(SimpleNamespace(handle_message=AsyncMock()))
+    session_key = "agent:main:telegram:dm:12345:678"
+    renew_task = SimpleNamespace(cancel=MagicMock())
+    sibling = _async_event("deleg_sibling")
+    record = {
+        "delegation_id": "deleg_primary",
+        "claim_id": "claim-primary",
+        "identity": ("deleg_primary", "completion"),
+        "renew_task": renew_task,
+        "siblings": [(sibling, "claim-sibling")],
+    }
+    runner._deferred_completion_deliveries = {session_key: [record]}
+    runner._completion_deliveries_inflight.add(record["identity"])
+    sibling_identity = runner._completion_delivery_identity(sibling)
+    runner._completion_deliveries_inflight.add(sibling_identity)
+    dropped = []
+    monkeypatch.setattr(
+        async_delegation,
+        "drop_completion_delivery",
+        lambda delegation_id, claim_id: dropped.append(
+            (delegation_id, claim_id)
+        )
+        or True,
+    )
+
+    runner._clear_conversation_scope(session_key, reason="new")
+
+    assert session_key not in runner._deferred_completion_deliveries
+    assert dropped == [
+        ("deleg_primary", "claim-primary"),
+        ("deleg_sibling", "claim-sibling"),
+    ]
+    renew_task.cancel.assert_called_once_with()
+    assert record["identity"] not in runner._completion_deliveries_inflight
+    assert sibling_identity not in runner._completion_deliveries_inflight
+
+
 def test_deferred_claim_renews_attached_siblings(monkeypatch):
     from tools import async_delegation
 

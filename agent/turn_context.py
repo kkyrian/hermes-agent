@@ -1380,11 +1380,30 @@ def build_turn_context(
         _db = getattr(agent, "_session_db", None)
         if _db is not None:
             try:
-                updated = _db.set_latest_user_content(
-                    agent.session_id,
-                    _multimodal_content_before_notes,
-                    _plugin_turn_content,
+                lease_holder = getattr(
+                    agent, "_active_session_turn_lease_holder", None
                 )
+                if lease_holder:
+                    updated = _db.set_latest_user_content(
+                        agent.session_id,
+                        _multimodal_content_before_notes,
+                        _plugin_turn_content,
+                        turn_lease_holder=lease_holder,
+                        turn_lease_ttl_seconds=(
+                            getattr(
+                                agent,
+                                "_active_session_turn_lease_ttl_seconds",
+                                300.0,
+                            )
+                            or 300.0
+                        ),
+                    )
+                else:
+                    updated = _db.set_latest_user_content(
+                        agent.session_id,
+                        _multimodal_content_before_notes,
+                        _plugin_turn_content,
+                    )
                 if updated != 1:
                     persistence_failed = True
                     persistence_error_cause = "unknown"

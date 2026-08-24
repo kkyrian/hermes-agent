@@ -59,6 +59,29 @@ def _seed(db, sid, title, n=8):
 
 
 class TestInPlaceCompaction:
+    def test_kept_prompt_restores_model_visible_context_parts(self):
+        """Byte-identical compaction keeps the authoritative tier breakdown."""
+        from agent.conversation_compression import compress_context
+        from agent.system_prompt import render_model_visible_context_blocks
+        from hermes_state import SessionDB
+
+        with tempfile.TemporaryDirectory() as tmp:
+            db = SessionDB(db_path=Path(tmp) / "t.db")
+            sid = "20260619_115500_prompt_parts"
+            _seed(db, sid, "prompt-parts")
+            agent = _make_agent(db, sid, in_place=True)
+            parts = {"stable": "sys", "context": "", "volatile": ""}
+            agent._cached_system_prompt = "sys"
+            agent._cached_system_prompt_parts = dict(parts)
+            messages = [{"role": "user", "content": f"m{i}"} for i in range(8)]
+
+            _compressed, prompt = compress_context(
+                agent, messages, approx_tokens=100_000, system_message="sys"
+            )
+
+            assert prompt == "sys"
+            assert render_model_visible_context_blocks(agent) == parts
+
     def test_in_place_keeps_same_session_id(self):
         """In-place mode: id unchanged, no child row, no rename, history kept."""
         from hermes_state import SessionDB

@@ -4,6 +4,8 @@ from types import SimpleNamespace
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 from agent.tool_executor import (
     _cache_post_tool_context_metadata,
     _finalize_keyboard_interrupt_batch,
@@ -602,6 +604,27 @@ def test_session_db_tool_result_batch_rolls_back_on_missing_call_id(tmp_path):
     ) == 0
     rows = db.get_messages_as_conversation("s1")
     assert [row["content"] for row in rows] == ["old-1", "old-2"]
+    db.close()
+
+
+def test_session_db_tool_result_batch_rejects_stale_turn_lease(tmp_path):
+    from hermes_state import SessionTurnLeaseLostError
+
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.create_session("s1", source="cli")
+    db.append_message("s1", "tool", content="new-owner", tool_call_id="call-0")
+    assert db.try_acquire_session_turn_lease("s1", "old-holder") is True
+    db.release_session_turn_lease("s1", "old-holder")
+    assert db.try_acquire_session_turn_lease("s1", "new-holder") is True
+
+    with pytest.raises(SessionTurnLeaseLostError):
+        db.set_tool_result_contents(
+            "s1",
+            [("call-0", "stale-owner")],
+            turn_lease_holder="old-holder",
+        )
+
+    assert db.get_messages_as_conversation("s1")[0]["content"] == "new-owner"
     db.close()
 
 

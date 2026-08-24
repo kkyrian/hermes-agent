@@ -3338,6 +3338,11 @@ def compress_context(
         _ensure_compressed_has_user_turn(messages, compressed)
 
         cached_system_prompt = agent._cached_system_prompt
+        cached_system_prompt_parts = getattr(
+            agent, "_cached_system_prompt_parts", None
+        )
+        if isinstance(cached_system_prompt_parts, dict):
+            cached_system_prompt_parts = dict(cached_system_prompt_parts)
         agent._invalidate_system_prompt()
 
         # Built-in memory is the only system-prompt input that a normal
@@ -3356,6 +3361,7 @@ def compress_context(
         ):
             new_system_prompt = cached_system_prompt
             agent._cached_system_prompt = cached_system_prompt
+            agent._cached_system_prompt_parts = cached_system_prompt_parts
             # _invalidate_system_prompt() above also cleared the
             # cross-session-stable prefix marker boundary. The kept prompt
             # is byte-identical, so reconstruct the stable tier and reuse

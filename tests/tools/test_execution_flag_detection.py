@@ -195,6 +195,17 @@ def test_exec_flag_payload_reaches_hardline_floor(command):
 
 
 @pytest.mark.parametrize(
+    "device",
+    ["/dev/mmcblk0boot0", "/dev/mmcblk0rpmb", "/dev/nvme0c0n1"],
+)
+def test_raw_device_hardline_covers_kernel_device_spellings(device):
+    assert detect_hardline_command(f"dd if=/dev/zero of={device}") == (
+        True,
+        "dd to raw block device",
+    )
+
+
+@pytest.mark.parametrize(
     "command",
     [
         "node -c script.js",
