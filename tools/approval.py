@@ -706,10 +706,39 @@ def _has_dd_to_raw_device(command: str) -> bool:
                 if "=" not in token:
                     continue
                 name, target = token.split("=", 1)
+                target = target.rstrip(")]}\"'")
                 if name.lower() == "of" and re.fullmatch(
                     _HARDLINE_BLOCK_DEVICE, target, re.IGNORECASE
                 ):
                     return True
+    # Top-level tokenization intentionally treats quoted strings as data, but
+    # command substitutions inside double quotes still execute. Walk the
+    # quote-aware executable starts as a second pass so ``echo "$(dd ...)"``
+    # is inspected without turning ordinary quoted prose into a command.
+    for _, word_end, word in _iter_shell_command_word_spans(command):
+        executable = os.path.basename(
+            _deobfuscate_shell_word_for_detection(word)
+        ).lower()
+        if executable != "dd":
+            continue
+        pos = word_end
+        for _ in range(64):
+            token_start, token_end, raw_token = _read_shell_word(command, pos)
+            if token_start == token_end:
+                break
+            token = _deobfuscate_shell_word_for_detection(raw_token)
+            if token in {"-h", "--help"}:
+                break
+            if "=" in token:
+                name, target = token.split("=", 1)
+                target = target.rstrip(")]}\"'")
+                if name.lower() == "of" and re.fullmatch(
+                    _HARDLINE_BLOCK_DEVICE, target, re.IGNORECASE
+                ):
+                    return True
+            pos = token_end
+            if raw_token.rstrip().endswith((")", "]", "}")):
+                break
     return False
 
 

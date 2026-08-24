@@ -5022,6 +5022,18 @@ def _schedule_deferred_completion_turn_retry(
     return True
 
 
+def _schedule_completion_claim_retry(process_registry, event: dict) -> None:
+    """Requeue a completion claimed elsewhere with bounded backoff."""
+    attempt = int(event.get("_claim_retry_count", 0) or 0) + 1
+    event["_claim_retry_count"] = attempt
+    delay = min(2 ** (attempt - 1), 30)
+    timer = threading.Timer(
+        delay, process_registry.completion_queue.put, args=(event,)
+    )
+    timer.daemon = True
+    timer.start()
+
+
 def _retry_deferred_completion_ack(
     cli, item: _DeferredCompletionInput, *, max_attempts: int = 5
 ) -> bool:
@@ -12902,11 +12914,15 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             session_key=session_key,
             owns_event=self._owns_process_notification,
         ):
+            if event.get("type") != "async_delegation":
+                self._pending_input.put(synthetic_message)
+                continue
             claim = claim_event_delivery(event, consumer)
             if claim is None:
                 if event_delivery_needs_retry(event):
-                    process_registry.completion_queue.put(event)
+                    _schedule_completion_claim_retry(process_registry, event)
                 continue
+            event.pop("_claim_retry_count", None)
             active_agent = getattr(self, "agent", None)
             enqueue_internal = getattr(active_agent, "enqueue_internal_event", None)
             admitted = False

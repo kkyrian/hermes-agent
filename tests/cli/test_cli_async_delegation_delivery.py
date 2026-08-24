@@ -256,6 +256,84 @@ def test_cli_completion_drain_uses_visible_session_identity(monkeypatch):
     assert completed == []
 
 
+def test_cli_completion_drain_keeps_ordinary_events_out_of_claim_retries(monkeypatch):
+    cli = HermesCLI.__new__(HermesCLI)
+    cli.session_id = "visible-session"
+    cli._pending_input = queue.Queue()
+    event = {"type": "watch_match", "session_key": "visible-session"}
+
+    class FakeRegistry:
+        def drain_notifications(self, *, session_key="", owns_event=None):
+            return [(event, "ordinary notification")]
+
+    claimed = []
+    monkeypatch.setattr(
+        "tools.process_registry.process_registry",
+        FakeRegistry(),
+    )
+    monkeypatch.setattr(
+        "tools.async_delegation.claim_event_delivery",
+        lambda *_args: claimed.append(1) or "",
+    )
+
+    cli._drain_process_notifications("cli-idle")
+
+    assert cli._pending_input.get_nowait() == "ordinary notification"
+    assert claimed == []
+
+
+def test_cli_completion_drain_backs_off_claimed_elsewhere(monkeypatch):
+    cli = HermesCLI.__new__(HermesCLI)
+    cli.session_id = "visible-session"
+    cli._pending_input = queue.Queue()
+    event = {
+        "type": "async_delegation",
+        "delegation_id": "deleg-owned",
+        "session_key": "visible-session",
+    }
+    completion_queue = queue.Queue()
+
+    class FakeRegistry:
+        def __init__(self):
+            self.completion_queue = completion_queue
+
+        def drain_notifications(self, *, session_key="", owns_event=None):
+            return [(event, "completion")]
+
+    scheduled = []
+
+    class _Timer:
+        daemon = False
+
+        def __init__(self, delay, callback, args=()):
+            scheduled.append((delay, callback, args))
+
+        def start(self):
+            pass
+
+    monkeypatch.setattr(
+        "tools.process_registry.process_registry",
+        FakeRegistry(),
+    )
+    monkeypatch.setattr(
+        "tools.async_delegation.claim_event_delivery",
+        lambda *_args: None,
+    )
+    monkeypatch.setattr(
+        "tools.async_delegation.event_delivery_needs_retry",
+        lambda *_args: True,
+    )
+    monkeypatch.setattr("cli.threading.Timer", _Timer)
+
+    cli._drain_process_notifications("cli-idle")
+
+    assert completion_queue.empty()
+    assert scheduled[0][0] == 1
+    scheduled[0][1](*scheduled[0][2])
+    assert completion_queue.get_nowait() is event
+    assert event["_claim_retry_count"] == 1
+
+
 def test_cli_completion_drain_admits_to_active_parent_mailbox(monkeypatch):
     cli = HermesCLI.__new__(HermesCLI)
     cli.session_id = "visible-session"

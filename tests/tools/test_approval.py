@@ -732,6 +732,8 @@ class TestExpandedHardlineFloor:
             "rm -rf /etc/",
             'rm --recursive "$HOME/"',
             'dd if=/dev/zero of="/dev/sda"',
+            "(dd if=/dev/zero of=/dev/sda)",
+            'echo "$(dd if=/dev/zero of=/dev/sda)"',
             "dd if=/dev/zero of=/dev/mapper/vg-lv",
             "dd of=/dev/zvol/tank/volume if=/dev/zero",
             "nice dd if=/dev/zero of=/dev/sda",
