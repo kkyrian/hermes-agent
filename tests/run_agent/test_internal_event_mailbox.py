@@ -42,15 +42,19 @@ class _CapturingSessionDB:
     def flush_token_counts(self) -> None:
         return None
 
-    def set_tool_result_content(self, session_id, tool_call_id, content):
+    def set_tool_result_contents(self, session_id, updates):
         del session_id
-        matches = [
-            row for row in self.rows if row.get("tool_call_id") == tool_call_id
-        ]
-        if len(matches) != 1:
-            return len(matches)
-        matches[0]["content"] = content
-        return 1
+        staged = []
+        for tool_call_id, content in updates:
+            matches = [
+                row for row in self.rows if row.get("tool_call_id") == tool_call_id
+            ]
+            if len(matches) != 1:
+                return 0
+            staged.append((matches[0], content))
+        for row, content in staged:
+            row["content"] = content
+        return len(staged)
 
 
 def test_internal_event_mailbox_accepts_and_drains_once_in_order() -> None:
@@ -344,7 +348,7 @@ def test_late_steer_requeues_when_persisted_carrier_update_fails() -> None:
     setattr(agent, "_pending_steer", "owner correction")
     setattr(agent, "_pending_steer_lock", threading.Lock())
     setattr(agent, "_session_db", SimpleNamespace(
-        set_tool_result_content=lambda *_args: 0
+        set_tool_result_contents=lambda *_args: 0
     ))
     setattr(agent, "session_id", "sess-failed-steer")
     messages = [{

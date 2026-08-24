@@ -1342,6 +1342,26 @@ def test_duplicate_primary_is_omitted_from_fresh_batch_text():
     assert "duplicate text" not in delivered_text
 
 
+def test_inflight_primary_is_omitted_from_fresh_batch_text():
+    adapter = SimpleNamespace(handle_message=AsyncMock())
+    runner = _runner(adapter)
+    inflight = _completion_event(started_at=1.0, session_id="proc_inflight")
+    fresh = _completion_event(started_at=2.0, session_id="proc_fresh_after_inflight")
+    inflight_identity = runner._completion_delivery_identity(inflight)
+    runner._completion_deliveries_inflight.add(inflight_identity)
+
+    async def _exercise():
+        return await asyncio.gather(
+            runner._enqueue_process_completion_notification("inflight text", inflight),
+            runner._enqueue_process_completion_notification("fresh text", fresh),
+        )
+
+    assert asyncio.run(_exercise()) == [True, True]
+    delivered_text = adapter.handle_message.await_args.args[0].text
+    assert "fresh text" in delivered_text
+    assert "inflight text" not in delivered_text
+
+
 def test_batch_format_failure_resolves_waiters_for_retry(monkeypatch):
     adapter = SimpleNamespace(handle_message=AsyncMock())
     runner = _runner(adapter)

@@ -2745,6 +2745,7 @@ def _deobfuscate_shell_word_for_detection(word: str) -> str:
 
 def _iter_shell_command_starts(command: str):
     starts = [0]
+    control_prefixes = {"!", "if", "then", "elif", "else", "while", "until", "do"}
 
     def scan(start: int, end: int) -> None:
         quote: str | None = None
@@ -2810,8 +2811,21 @@ def _iter_shell_command_starts(command: str):
 
     scan(0, len(command))
 
-    seen: set[int] = set()
+    expanded_starts = list(starts)
     for start in starts:
+        pos = _skip_shell_whitespace(command, start)
+        for _ in range(4):
+            word_start, word_end, word = _read_shell_word(command, pos)
+            if word_start == word_end:
+                break
+            if _deobfuscate_shell_word_for_detection(word).lower() not in control_prefixes:
+                break
+            pos = _skip_shell_whitespace(command, word_end)
+            if pos < len(command):
+                expanded_starts.append(pos)
+
+    seen: set[int] = set()
+    for start in expanded_starts:
         start = _skip_shell_whitespace(command, start)
         if start < len(command) and start not in seen:
             seen.add(start)

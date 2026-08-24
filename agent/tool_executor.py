@@ -251,33 +251,30 @@ def _persist_final_tool_result_batch(agent, tool_messages: list[dict]) -> bool:
     if session_db is None or not session_id:
         return True
 
-    for message in tool_messages:
-        tool_call_id = str(message.get("tool_call_id") or "")
-        persistence_cause = "unknown"
+    updates = [
+        (str(message.get("tool_call_id") or ""), message.get("content"))
+        for message in tool_messages
+    ]
+    persistence_cause = "unknown"
+    try:
+        updated = session_db.set_tool_result_contents(session_id, updates)
+    except Exception as exc:
+        updated = 0
         try:
-            updated = session_db.set_tool_result_content(
-                session_id,
-                tool_call_id,
-                message.get("content"),
-            )
-        except Exception as exc:
-            updated = 0
-            try:
-                from hermes_state import classify_persistence_error
+            from hermes_state import classify_persistence_error
 
-                persistence_cause = classify_persistence_error(exc)
-            except Exception:
-                persistence_cause = "unknown"
-            logger.warning(
-                "Final tool-result persistence failed for session=%s call=%s",
-                session_id,
-                tool_call_id or "none",
-                exc_info=True,
-            )
-        if updated != 1:
-            agent._incremental_persistence_failed = True
-            agent._last_persistence_error_cause = persistence_cause
-            return False
+            persistence_cause = classify_persistence_error(exc)
+        except Exception:
+            persistence_cause = "unknown"
+        logger.warning(
+            "Final tool-result batch persistence failed for session=%s",
+            session_id,
+            exc_info=True,
+        )
+    if updated != len(updates):
+        agent._incremental_persistence_failed = True
+        agent._last_persistence_error_cause = persistence_cause
+        return False
     return True
 
 

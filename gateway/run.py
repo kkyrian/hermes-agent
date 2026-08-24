@@ -26260,7 +26260,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     identity = self._completion_delivery_identity(entry[1])
                     if (
                         identity is not None
-                        and identity in self._completion_deliveries_delivered
+                        and (
+                            identity in self._completion_deliveries_inflight
+                            or identity in self._completion_deliveries_delivered
+                        )
                     ):
                         continue
                     fresh_entries.append(entry)
