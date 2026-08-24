@@ -694,6 +694,8 @@ def _iter_dispatched_command_tokens(command: str):
             "-c", "--class", "-n", "--classdata", "-p", "--pid",
             "-P", "--pgid", "-u", "--uid",
         },
+        "stdbuf": {"-i", "--input", "-o", "--output", "-e", "--error"},
+        "time": {"-f", "--format", "-o", "--output"},
     }
     xargs_options_with_arg = {
         "-a", "--arg-file", "-d", "--delimiter", "-e", "-E", "--eof",
@@ -709,7 +711,23 @@ def _iter_dispatched_command_tokens(command: str):
             executable = os.path.basename(
                 _deobfuscate_shell_word_for_detection(word)
             ).lower()
-            if executable in wrapper_options_with_arg:
+            if executable == "timeout":
+                index = 1
+                while index < len(tokens):
+                    token = tokens[index]
+                    option, value = _split_option(token)
+                    if token == "--":
+                        index += 1
+                        break
+                    if not token.startswith("-") or token == "-":
+                        break
+                    index += 1
+                    if option in {"-k", "--kill-after", "-s", "--signal"} and value is None:
+                        index += 1
+                # timeout's first non-option operand is the duration.
+                if index + 1 < len(tokens):
+                    yield tokens[index + 1:]
+            elif executable in wrapper_options_with_arg:
                 index = 1
                 while index < len(tokens):
                     token = tokens[index]
@@ -726,6 +744,9 @@ def _iter_dispatched_command_tokens(command: str):
                     ) or (
                         executable == "ionice"
                         and re.fullmatch(r"-[cnpPu].+", token)
+                    ) or (
+                        executable == "stdbuf"
+                        and re.fullmatch(r"-[ioe].+", token)
                     )
                     if (
                         not compact_arg

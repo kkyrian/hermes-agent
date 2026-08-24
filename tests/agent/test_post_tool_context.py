@@ -233,6 +233,42 @@ def test_evidence_in_one_result_does_not_exempt_other_results_from_rebudgeting()
     assert messages[1]["content"].endswith("A" * 180)
 
 
+def test_internal_completion_evidence_is_persisted_before_authority_rebudget():
+    agent = SimpleNamespace(
+        session_id="session-completions",
+        _current_turn_id="turn-completions",
+        _session_db=None,
+        _apply_pending_internal_events_to_tool_results=lambda messages, _count: (
+            messages[-1].__setitem__(
+                "content", messages[-1]["content"] + "\n\n" + "E" * 5_000
+            )
+        ),
+        _apply_pending_steer_to_tool_results=lambda *_args: None,
+    )
+    messages = [{"role": "tool", "tool_call_id": "call-1", "content": "base"}]
+    persisted = "<persisted-output>\nFull output saved to: /tmp/completions.txt\n</persisted-output>"
+
+    with patch(
+        "agent.tool_executor.maybe_persist_tool_result",
+        return_value=persisted,
+    ) as persist:
+        _finalize_tool_boundary(
+            agent,
+            messages,
+            messages,
+            [_tool_call("terminal", "call-1")],
+            effective_task_id="task-completions",
+            api_call_count=3,
+            budget=BudgetConfig(turn_budget=1_000, preview_size=100),
+        )
+
+    assert messages[0]["content"].endswith(persisted)
+    assert "E" * 1_000 not in messages[0]["content"]
+    assert len(messages[0]["content"]) <= 1_000
+    assert persist.call_args.kwargs["threshold"] == 1_000
+    assert persist.call_args.args[0].endswith("E" * 5_000)
+
+
 def test_mandatory_spill_failure_survives_final_small_budget():
     agent = SimpleNamespace(
         session_id=None,
