@@ -5108,9 +5108,12 @@ class AIAgent:
         for tc in tool_calls:
             if tc.function.name == "delegate_task":
                 child_count = _delegate_children(tc)
-                if kept_children + child_count <= max_children:
+                if (
+                    kept_children + child_count <= max_children
+                    or (kept_children == 0 and child_count > max_children)
+                ):
                     truncated.append(tc)
-                    kept_children += child_count
+                    kept_children = min(max_children, kept_children + child_count)
             else:
                 truncated.append(tc)
         logger.warning(

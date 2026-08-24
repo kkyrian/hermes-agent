@@ -156,7 +156,22 @@ class TestCapDelegateTaskCalls:
         malformed = make_tc("delegate_task", "{")
         terminal = make_tc("terminal")
 
-        assert AIAgent._cap_delegate_task_calls([malformed, terminal]) == [terminal]
+        assert AIAgent._cap_delegate_task_calls([malformed, terminal]) == [
+            malformed,
+            terminal,
+        ]
+
+    def test_single_oversized_batch_reaches_tool_validator(self, monkeypatch):
+        monkeypatch.setattr(
+            "tools.delegate_tool._get_max_concurrent_children",
+            lambda depth=None: 2,
+        )
+        oversized = make_tc(
+            "delegate_task",
+            '{"tasks":[{"goal":"a"},{"goal":"b"},{"goal":"c"}]}',
+        )
+
+        assert AIAgent._cap_delegate_task_calls([oversized]) == [oversized]
 
     def test_empty_batch_with_goal_charges_one_child(self, monkeypatch):
         monkeypatch.setattr(
