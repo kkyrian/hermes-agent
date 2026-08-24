@@ -5038,7 +5038,10 @@ def _retry_deferred_completion_ack(
     cli, item: _DeferredCompletionInput, *, max_attempts: int = 5
 ) -> bool:
     """Retry only the durable acknowledgement; never rerun the agent turn."""
-    from tools.async_delegation import complete_event_delivery, release_event_delivery
+    from tools.async_delegation import (
+        complete_event_delivery,
+        renew_completion_delivery,
+    )
 
     for attempt in range(max_attempts):
         if attempt:
@@ -5054,10 +5057,22 @@ def _retry_deferred_completion_ack(
         if acknowledged:
             _forget_queued_deferred_completion(cli, item)
             return True
-    try:
-        release_event_delivery(item.event, item.claim)
-    finally:
-        _forget_queued_deferred_completion(cli, item)
+    delegation_id = str(item.event.get("delegation_id") or "")
+    if delegation_id:
+        try:
+            renew_completion_delivery(delegation_id, item.claim)
+        except Exception:
+            logging.debug(
+                "could not renew deferred CLI completion acknowledgement claim",
+                exc_info=True,
+            )
+    timer = threading.Timer(
+        30,
+        _retry_deferred_completion_ack,
+        args=(cli, item),
+    )
+    timer.daemon = True
+    timer.start()
     return False
 
 

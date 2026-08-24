@@ -1605,25 +1605,43 @@ def _load_skill_prompt_exposure_policy() -> tuple[dict, tuple]:
         from hermes_cli.config import load_config_readonly
 
         raw_config = load_config_readonly()
-        raw = ((raw_config.get("skills") or {}).get("prompt_exposure") or {})
+        raw_skills = raw_config.get("skills") or {}
+        raw = raw_skills.get("prompt_exposure")
+        if raw is None:
+            raw = {}
     except Exception:
         logger.debug("Could not load skills.prompt_exposure", exc_info=True)
         raw_config = {}
         raw = {}
-    if not isinstance(raw, dict):
+    malformed_policy = not isinstance(raw, dict)
+    if malformed_policy:
+        logger.warning(
+            "Invalid skills.prompt_exposure=%r; hiding skills",
+            raw,
+        )
         raw = {}
 
-    default = str(raw.get("default") or "description").strip().lower()
+    default = "hidden" if malformed_policy else str(
+        raw.get("default") or "description"
+    ).strip().lower()
     if default not in _SKILL_EXPOSURE_TIERS:
         logger.warning("Invalid skills.prompt_exposure.default=%r; using description", default)
         default = "description"
 
     memberships: dict[str, set[str]] = {}
+    malformed_tier_container = False
     for key, tier in (("hidden", "hidden"), ("names_only", "name"), ("descriptions", "description")):
-        values = raw.get(key) or []
+        raw_values = raw.get(key)
+        values = raw_values or []
         if isinstance(values, str):
             values = [values]
         if not isinstance(values, (list, tuple, set)):
+            logger.warning(
+                "Invalid skills.prompt_exposure.%s=%r; hiding skills",
+                key,
+                raw_values,
+            )
+            malformed_tier_container = True
             continue
         for value in values:
             name = str(value).strip()
@@ -1643,6 +1661,9 @@ def _load_skill_prompt_exposure_policy() -> tuple[dict, tuple]:
             ambiguous_memberships.add(name)
         else:
             tiers[name] = next(iter(declared))
+    if malformed_tier_container:
+        default = "hidden"
+        tiers = {name: "hidden" for name in tiers}
 
     conditional: dict[str, dict] = {}
     raw_conditional_value = raw.get("conditional")
