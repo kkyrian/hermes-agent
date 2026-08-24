@@ -161,6 +161,42 @@ def test_post_tool_context_is_rebounded_before_final_persistence(tmp_path):
     db.close()
 
 
+def test_post_tool_context_receives_authority_rebudgeted_result():
+    seen_results = []
+    agent = SimpleNamespace(
+        session_id=None,
+        _session_db=None,
+        _current_turn_id="turn-final-hook-input",
+        _apply_pending_internal_events_to_tool_results=lambda *_args: None,
+        _apply_pending_steer_to_tool_results=lambda *_args: None,
+    )
+    messages = [
+        {"role": "tool", "tool_call_id": "call-1", "content": "x" * 5_000},
+        {"role": "tool", "tool_call_id": "call-2", "content": "small"},
+    ]
+
+    def hook(_name, **kwargs):
+        seen_results.append(kwargs["result"])
+        return []
+
+    with (
+        patch("hermes_cli.lifecycle.has_hook", return_value=True),
+        patch("hermes_cli.lifecycle.invoke_hook", side_effect=hook),
+    ):
+        _finalize_tool_boundary(
+            agent,
+            messages,
+            messages,
+            [_tool_call("terminal", "call-1"), _tool_call("terminal", "call-2")],
+            effective_task_id="task-final-hook-input",
+            api_call_count=1,
+            budget=BudgetConfig(turn_budget=500, preview_size=80),
+        )
+
+    assert seen_results == [message["content"] for message in messages]
+    assert "x" * 1_000 not in seen_results[0]
+
+
 def test_hook_suffixes_spill_or_truncate_before_small_turn_budget(tmp_path):
     agent = SimpleNamespace(
         session_id=None,

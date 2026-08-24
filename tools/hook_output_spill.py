@@ -192,6 +192,7 @@ def _is_link_or_reparse(path: Path) -> bool:
 def _write_spill_with_dir_fd(text: str, root: Path, segments: list[str]) -> Path:
     directory_fd: Optional[int] = None
     temp_name: Optional[str] = None
+    final_name: Optional[str] = None
     try:
         directory_fd = os.open(
             root,
@@ -229,11 +230,18 @@ def _write_spill_with_dir_fd(text: str, root: Path, segments: list[str]) -> Path
         )
         temp_name = None
         os.chmod(final_name, 0o600, dir_fd=directory_fd, follow_symlinks=False)
-        return root.joinpath(*segments, final_name)
+        final_path = root.joinpath(*segments, final_name)
+        final_name = None
+        return final_path
     finally:
         if directory_fd is not None and temp_name is not None:
             try:
                 os.unlink(temp_name, dir_fd=directory_fd)
+            except OSError:
+                pass
+        if directory_fd is not None and final_name is not None:
+            try:
+                os.unlink(final_name, dir_fd=directory_fd)
             except OSError:
                 pass
         if directory_fd is not None:
@@ -263,6 +271,7 @@ def _write_spill_portable(text: str, root: Path, segments: list[str]) -> Path:
     temp_path = current / f".spill-{uuid.uuid4().hex}.tmp"
     final_path = current / f"{uuid.uuid4().hex}.txt"
     fd: Optional[int] = None
+    final_committed = False
     try:
         fd = os.open(temp_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
@@ -275,6 +284,7 @@ def _write_spill_portable(text: str, root: Path, segments: list[str]) -> Path:
         if _is_link_or_reparse(final_path):
             raise OSError(f"refusing linked spill result: {final_path}")
         final_path.resolve(strict=True).relative_to(root)
+        final_committed = True
         return final_path
     finally:
         if fd is not None:
@@ -286,6 +296,11 @@ def _write_spill_portable(text: str, root: Path, segments: list[str]) -> Path:
             temp_path.unlink(missing_ok=True)
         except OSError:
             pass
+        if not final_committed:
+            try:
+                final_path.unlink(missing_ok=True)
+            except OSError:
+                pass
 
 
 def write_spill_file(

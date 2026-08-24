@@ -1664,3 +1664,9 @@ def test_sibling_claimed_by_other_consumer_is_not_double_delivered(
     assert "Result for deleg_owned_1" not in delivered.text
     row = async_delegation.get_durable_delegation(events[1]["delegation_id"])
     assert row["delivery_state"] == "pending"
+    queued = []
+    while not isolated.empty():
+        queued.append(isolated.get_nowait())
+    assert any(
+        evt.get("delegation_id") == events[1]["delegation_id"] for evt in queued
+    )

@@ -25986,13 +25986,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             durable_delegation_id = str(evt.get("delegation_id") or "")
             if durable_delegation_id:
                 try:
-                    from tools.async_delegation import claim_completion_delivery
+                    from tools.async_delegation import (
+                        claim_completion_delivery,
+                        completion_delivery_needs_retry,
+                    )
 
                     durable_claim_id = f"gateway:{id(self)}:{__import__('uuid').uuid4().hex}"
                     if not claim_completion_delivery(
                         durable_delegation_id, durable_claim_id,
                     ):
-                        return None
+                        return (
+                            False
+                            if completion_delivery_needs_retry(durable_delegation_id)
+                            else None
+                        )
                 except Exception as exc:
                     logger.warning(
                         "Could not claim durable async completion %s: %s",
@@ -26468,6 +26475,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         from tools.async_delegation import (
             claim_event_delivery,
             complete_event_delivery,
+            event_delivery_needs_retry,
             release_event_delivery,
         )
 
@@ -26478,7 +26486,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             claim_id = claim_event_delivery(evt, f"gateway-batch:{id(self)}")
             if claim_id is None:
                 # Another consumer owns this row's delivery; keep its result
-                # out of our consolidated text so it is never double-injected.
+                # out of our consolidated text so it is never double-injected,
+                # but retain a pending row for retry after that lease expires.
+                if event_delivery_needs_retry(evt):
+                    _pr.completion_queue.put(evt)
                 continue
             siblings.append((evt, claim_id))
             blocks.append(synth_text)

@@ -224,6 +224,33 @@ class SpillIfOversizedTests(unittest.TestCase):
                 )
         self.assertEqual(list(directory.rglob(".spill-*.tmp")), [])
 
+    def test_secure_spill_removes_renamed_file_when_final_chmod_fails(self):
+        directory = Path(self.tmpdir) / "secure-finalize-failure"
+        with patch.object(os, "chmod", side_effect=OSError("chmod failed")):
+            result = hos.write_spill_file(
+                "TOP-SECRET",
+                session_id="shared",
+                directory_override=str(directory),
+            )
+        self.assertFalse(result["ok"])
+        self.assertEqual(list(directory.rglob("*.txt")), [])
+        self.assertEqual(list(directory.rglob(".spill-*.tmp")), [])
+
+    def test_portable_spill_removes_renamed_file_when_final_chmod_fails(self):
+        directory = Path(self.tmpdir) / "portable-finalize-failure"
+        with (
+            patch.object(hos, "_supports_secure_dir_fd", return_value=False),
+            patch.object(os, "chmod", side_effect=OSError("chmod failed")),
+        ):
+            result = hos.write_spill_file(
+                "TOP-SECRET",
+                session_id="shared",
+                directory_override=str(directory),
+            )
+        self.assertFalse(result["ok"])
+        self.assertEqual(list(directory.rglob("*.txt")), [])
+        self.assertEqual(list(directory.rglob(".spill-*.tmp")), [])
+
     def test_mandatory_spill_failure_retains_complete_payload_inline(self):
         text = "HEAD-" + "x" * 500 + "-UNIQUE-MIDDLE-" + "y" * 500 + "-TAIL"
         with patch.object(
