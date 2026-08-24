@@ -317,6 +317,22 @@ def _finalize_tool_boundary(
     authority_contents = [
         copy.deepcopy(message.get("content", "")) for message in tool_messages
     ]
+    _rebudget_tool_bases_preserving_suffixes(
+        tool_messages,
+        base_contents,
+        authority_contents,
+        env=get_active_env(effective_task_id),
+        budget=budget,
+        clear_trusted_evidence=False,
+    )
+    finalized_model_contents = [
+        copy.deepcopy(message.get("content", "")) for message in tool_messages
+    ]
+    # The hook must observe exactly this provider-bound result.  During the
+    # second pass it is therefore immutable budget evidence; only context the
+    # hook appends after seeing it may be reduced.
+    for message in tool_messages:
+        message[TRUSTED_BUDGET_EVIDENCE_KEY] = True
     _finalize_tool_result_batch(
         agent,
         tool_messages,
@@ -327,8 +343,8 @@ def _finalize_tool_boundary(
     )
     _rebudget_tool_bases_preserving_suffixes(
         tool_messages,
-        base_contents,
-        authority_contents,
+        finalized_model_contents,
+        finalized_model_contents,
         env=get_active_env(effective_task_id),
         budget=budget,
     )
@@ -420,6 +436,7 @@ def _rebudget_tool_bases_preserving_suffixes(
     *,
     env,
     budget: BudgetConfig,
+    clear_trusted_evidence: bool = True,
 ) -> None:
     """Rebudget base output while preserving internal/steer/hook suffix order."""
     def _text_content(value: Any) -> str:
@@ -627,8 +644,9 @@ def _rebudget_tool_bases_preserving_suffixes(
             blocks = _restore_multimodal_base(base, budgeted_base)
             message["content"] = blocks + suffix["authority"] + suffix["hook"]
 
-    for message in tool_messages:
-        message.pop(TRUSTED_BUDGET_EVIDENCE_KEY, None)
+    if clear_trusted_evidence:
+        for message in tool_messages:
+            message.pop(TRUSTED_BUDGET_EVIDENCE_KEY, None)
 
 # Maximum number of concurrent worker threads for parallel tool execution.
 # Mirrors the constant in ``run_agent`` for tests/imports that look here.

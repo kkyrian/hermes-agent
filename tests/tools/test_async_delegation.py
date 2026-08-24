@@ -97,6 +97,31 @@ def test_completion_claim_renewal_extends_only_the_matching_pending_claim(
     assert claimed_at == 200.0
 
 
+def test_failed_claim_distinguishes_live_claim_from_terminal_delivery(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    delegation_id = "deleg_claim_disposition"
+    ad._persist_dispatch(
+        {
+            "delegation_id": delegation_id,
+            "session_key": "session",
+            "parent_session_id": "parent",
+            "dispatched_at": 1.0,
+        }
+    )
+    ad._persist_completion(
+        {"delegation_id": delegation_id, "status": "completed", "completed_at": 2.0},
+        {"status": "completed", "summary": "done"},
+    )
+
+    assert ad.claim_completion_delivery(delegation_id, "consumer-a")
+    assert not ad.claim_completion_delivery(delegation_id, "consumer-b")
+    assert ad.completion_delivery_needs_retry(delegation_id)
+    assert ad.complete_completion_delivery(delegation_id, "consumer-a")
+    assert not ad.completion_delivery_needs_retry(delegation_id)
+
+
 def test_active_for_session_counts_every_live_delegation_state():
     with ad._records_lock:
         ad._records.update(
@@ -658,6 +683,56 @@ def test_delegate_task_background_routes_async_and_does_not_block(monkeypatch):
         "[HERMES INTERNAL EVENT — SUBAGENT RESULT — NOT USER INPUT — BATCH"
     )
     assert "the real task" in text
+
+
+def test_background_registry_cap_is_global_not_delegator_depth(monkeypatch):
+    """A nested parent's local child cap must not shrink the shared registry."""
+    from unittest.mock import MagicMock
+    import tools.delegate_tool as dt
+
+    parent = MagicMock()
+    parent._delegate_depth = 1
+    parent.session_id = "nested-parent"
+    parent._active_children = []
+    parent._active_children_lock = None
+    child = MagicMock()
+    child._delegate_role = "leaf"
+    child._subagent_id = "nested-child"
+    captured = {}
+
+    monkeypatch.setattr(dt, "_get_max_spawn_depth", lambda: 3)
+    monkeypatch.setattr(dt, "_get_max_concurrent_children", lambda depth=None: 1)
+
+    def global_cap(*args):
+        assert args == ()
+        return 8
+
+    monkeypatch.setattr(dt, "_get_max_async_children", global_cap)
+    monkeypatch.setattr(dt, "_build_child_agent", lambda **kwargs: child)
+    monkeypatch.setattr(
+        dt,
+        "_resolve_delegation_credentials",
+        lambda *_args, **_kwargs: {
+            "model": "m", "provider": None, "base_url": None,
+            "api_key": None, "api_mode": None, "command": None, "args": None,
+        },
+    )
+
+    def dispatch(**kwargs):
+        captured.update(kwargs)
+        return {"status": "dispatched", "delegation_id": "deleg_nested"}
+
+    monkeypatch.setattr(ad, "dispatch_async_delegation_batch", dispatch)
+    parsed = json.loads(
+        dt.delegate_task(
+            goal="nested work",
+            background=True,
+            parent_agent=parent,
+        )
+    )
+
+    assert parsed["status"] == "dispatched"
+    assert captured["max_async_children"] == 8
 
 
 def test_delegate_task_background_uses_live_tui_agent_session_id(monkeypatch):

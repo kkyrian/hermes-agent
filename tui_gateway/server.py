@@ -10235,10 +10235,14 @@ def _notification_poller_loop(
 
         rid = f"__notif__{int(time.time() * 1000)}"
         from tools.async_delegation import (
-            claim_event_delivery, complete_event_delivery, release_event_delivery,
+            claim_event_delivery, complete_event_delivery,
+            event_delivery_needs_retry, release_event_delivery,
         )
         _claim = claim_event_delivery(evt, "tui-poller")
         if _claim is None:
+            if event_delivery_needs_retry(evt):
+                process_registry.completion_queue.put(evt)
+                time.sleep(0.25)
             continue
         try:
             _emit("message.start", sid)
@@ -10313,10 +10317,13 @@ def _notification_poller_loop(
 
         rid = f"__notif__{int(time.time() * 1000)}"
         from tools.async_delegation import (
-            claim_event_delivery, complete_event_delivery, release_event_delivery,
+            claim_event_delivery, complete_event_delivery,
+            event_delivery_needs_retry, release_event_delivery,
         )
         _claim = claim_event_delivery(evt, "tui-poller")
         if _claim is None:
+            if event_delivery_needs_retry(evt):
+                deferred.append(evt)
             continue
         try:
             _emit("message.start", sid)
@@ -11587,10 +11594,13 @@ def _run_prompt_submit(
                         break
                     session["running"] = True
                 from tools.async_delegation import (
-                    claim_event_delivery, complete_event_delivery, release_event_delivery,
+                    claim_event_delivery, complete_event_delivery,
+                    event_delivery_needs_retry, release_event_delivery,
                 )
                 _claim = claim_event_delivery(_evt, "tui-post-turn")
                 if _claim is None:
+                    if event_delivery_needs_retry(_evt):
+                        process_registry.completion_queue.put(_evt)
                     continue
                 try:
                     _emit("message.start", sid)

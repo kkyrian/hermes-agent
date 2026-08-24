@@ -476,6 +476,31 @@ def claim_completion_delivery(delegation_id: str, claim_id: str) -> bool:
         return cur.rowcount == 1
 
 
+def completion_delivery_needs_retry(delegation_id: str) -> bool:
+    """Return whether a failed claim still represents pending durable work.
+
+    A false claim result is ambiguous: another consumer may hold a live lease,
+    or the row may already be delivered/dropped.  Queue drains use this check
+    to retain only the former instead of stranding it until process restart or
+    requeueing terminal rows forever.
+    """
+    if not delegation_id:
+        return False
+    with _DB_LOCK, _transaction() as conn:
+        row = conn.execute(
+            "SELECT delivery_state FROM async_delegations WHERE delegation_id=?",
+            (delegation_id,),
+        ).fetchone()
+    return bool(row is not None and row[0] == "pending")
+
+
+def event_delivery_needs_retry(evt: Dict[str, Any]) -> bool:
+    """Event-shaped wrapper for ``completion_delivery_needs_retry``."""
+    if evt.get("type") != "async_delegation":
+        return False
+    return completion_delivery_needs_retry(str(evt.get("delegation_id") or ""))
+
+
 def claim_event_delivery(evt: Dict[str, Any], consumer: str) -> Optional[str]:
     """Claim a durable delegation event; non-durable events need no token."""
     if evt.get("type") != "async_delegation":
