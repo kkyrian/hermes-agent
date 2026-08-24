@@ -305,6 +305,14 @@ def _finalize_tool_boundary(
     )
     if callable(apply_internal_events):
         apply_internal_events(messages, len(tool_messages))
+    _bound_internal_event_authority(
+        agent,
+        tool_messages,
+        base_contents,
+        env=get_active_env(effective_task_id),
+        budget=budget,
+        api_call_count=api_call_count,
+    )
     agent._apply_pending_steer_to_tool_results(messages, len(tool_messages))
     authority_contents = [
         copy.deepcopy(message.get("content", "")) for message in tool_messages
@@ -325,6 +333,84 @@ def _finalize_tool_boundary(
         budget=budget,
     )
     _persist_final_tool_result_batch(agent, tool_messages)
+
+
+def _bound_internal_event_authority(
+    agent,
+    tool_messages: list[dict],
+    base_contents: list,
+    *,
+    env,
+    budget: BudgetConfig,
+    api_call_count: int,
+) -> None:
+    """Persist oversized completion evidence before it becomes authority.
+
+    Internal events are appended after the ordinary tool-result budget pass and
+    must remain later than tool output.  Persist their aggregate when it alone
+    exceeds the configured turn budget so the next provider request receives a
+    bounded, recoverable reference instead of an unshrinkable authority suffix.
+    """
+    suffixes: list[tuple[int, str, str]] = []
+    for index, (message, base) in enumerate(zip(tool_messages, base_contents)):
+        content = message.get("content", "")
+        if isinstance(base, str) and isinstance(content, str) and content.startswith(base):
+            suffix = content[len(base):]
+            if suffix:
+                suffixes.append((index, "text", suffix))
+        elif (
+            isinstance(base, list)
+            and isinstance(content, list)
+            and content[: len(base)] == base
+        ):
+            suffix_blocks = content[len(base):]
+            suffix = _multimodal_text_summary(suffix_blocks)
+            if suffix:
+                suffixes.append((index, "blocks", suffix))
+    aggregate = "".join(suffix for _, _, suffix in suffixes)
+    if not aggregate or len(aggregate) <= budget.turn_budget:
+        return
+
+    preview_size = min(
+        budget.preview_size,
+        max(64, budget.turn_budget // 4),
+    )
+    persisted = maybe_persist_tool_result(
+        aggregate,
+        "internal_completion_events",
+        "-".join(
+            part
+            for part in (
+                str(getattr(agent, "session_id", "") or "session"),
+                str(getattr(agent, "_current_turn_id", "") or "turn"),
+                str(api_call_count),
+            )
+            if part
+        ),
+        env=env,
+        config=BudgetConfig(
+            default_result_size=budget.default_result_size,
+            turn_budget=budget.turn_budget,
+            preview_size=preview_size,
+            tool_overrides=budget.tool_overrides,
+        ),
+        threshold=max(1, budget.turn_budget),
+    )
+
+    for index, kind, _suffix in suffixes:
+        base = base_contents[index]
+        tool_messages[index]["content"] = list(base) if kind == "blocks" else base
+    target_index, target_kind, _ = suffixes[-1]
+    if target_kind == "blocks":
+        tool_messages[target_index]["content"].append(
+            {"type": "text", "text": persisted}
+        )
+    else:
+        tool_messages[target_index]["content"] += "\n\n" + persisted
+    logger.info(
+        "Persisted %d chars of internal completion evidence before provider boundary",
+        len(aggregate),
+    )
 
 
 def _rebudget_tool_bases_preserving_suffixes(
