@@ -96,8 +96,14 @@ def _fsync_directory(path: Path) -> None:
 
 def _is_live_profile(home: Path) -> bool:
     default_home = Path.home() / ".hermes"
+    lexical = Path(os.path.abspath(home.expanduser()))
     try:
-        resolved = home.resolve()
+        lexical.relative_to(_live_profile_root())
+        return True
+    except ValueError:
+        pass
+    try:
+        resolved = lexical.resolve()
         if resolved == default_home.resolve():
             return True
         resolved.relative_to(_live_profile_root().resolve())
@@ -127,11 +133,12 @@ def _counts(policy: dict) -> dict[str, int]:
 
 
 def apply_policy(home: Path, fragment: Path, *, apply: bool, allow_live: bool) -> dict:
-    home = home.expanduser().resolve()
-    if _is_live_profile(home) and apply and not allow_live:
+    expanded_home = home.expanduser()
+    if _is_live_profile(expanded_home) and apply and not allow_live:
         raise PermissionError(
             "live profile mutation requires --apply and --allow-live-profile"
         )
+    home = expanded_home.resolve()
     config_path = home / "config.yaml"
     config_existed = config_path.exists()
     config = _load_yaml(config_path)

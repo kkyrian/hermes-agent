@@ -169,6 +169,24 @@ def test_live_profile_requires_two_explicit_flags(monkeypatch, tmp_path):
     assert Path(applied["manifest"]).exists()
 
 
+def test_symlinked_named_profile_requires_two_explicit_flags(monkeypatch, tmp_path):
+    fake_home = tmp_path / "home"
+    live_root = fake_home / ".hermes" / "profiles"
+    live_root.mkdir(parents=True)
+    external = tmp_path / "external-profile"
+    external.mkdir()
+    profile = live_root / "linked"
+    profile.symlink_to(external, target_is_directory=True)
+    policy = tmp_path / "policy.yaml"
+    _policy(policy)
+    monkeypatch.setattr(Path, "home", lambda: fake_home)
+
+    with pytest.raises(PermissionError):
+        MOD.apply_policy(profile, policy, apply=True, allow_live=False)
+
+    assert not (external / "config.yaml").exists()
+
+
 def test_default_home_is_live_for_apply_and_rollback(monkeypatch, tmp_path):
     home = tmp_path / ".hermes"
     home.mkdir()
