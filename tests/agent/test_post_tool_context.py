@@ -448,7 +448,8 @@ def test_post_tool_context_appends_to_multimodal_result(tmp_path):
         "text": "\n\nIMAGE-DELTA",
     }
     replay = db.get_messages_as_conversation(session_id)
-    assert replay[0]["content"] == messages[0]["content"]
+    assert replay[0]["content"] == "screenshot\n[screenshot]\n\n\nIMAGE-DELTA"
+    assert "base64" not in replay[0]["content"]
     db.close()
 
 

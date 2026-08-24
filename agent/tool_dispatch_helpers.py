@@ -385,6 +385,25 @@ def _multimodal_text_summary(value: Any) -> str:
         return str(value)
 
 
+def sanitize_tool_result_for_persistence(value: Any) -> Any:
+    """Strip binary image payloads from durable tool-result content."""
+    if _is_multimodal_tool_result(value):
+        return _multimodal_text_summary(value)
+    if isinstance(value, list):
+        text_parts = []
+        for part in value:
+            if isinstance(part, dict) and part.get("type") == "text":
+                text_parts.append(str(part.get("text", "")))
+            elif isinstance(part, dict) and part.get("type") in {
+                "image",
+                "image_url",
+                "input_image",
+            }:
+                text_parts.append("[screenshot]")
+        return "\n".join(text_parts) if text_parts else None
+    return value
+
+
 def _append_subdir_hint_to_multimodal(value: Dict[str, Any], hint: str) -> None:
     """Mutate a multimodal tool-result envelope to append a subdir hint.
 
