@@ -562,6 +562,39 @@ def test_deferred_claim_renews_while_record_remains_active(monkeypatch):
     assert renewals == [("deleg_renew", "claim-1")]
 
 
+def test_deferred_claim_retries_after_transient_renewal_error(monkeypatch):
+    from tools import async_delegation
+
+    runner = _runner(SimpleNamespace(handle_message=AsyncMock()))
+    session_key = "agent:main:telegram:dm:12345:678"
+    record = {"delegation_id": "deleg_renew", "claim_id": "claim-1"}
+    runner._deferred_completion_deliveries = {session_key: [record]}
+    attempts = 0
+
+    def _renew(_delegation_id, _claim_id):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise RuntimeError("database is locked")
+        return True
+
+    monkeypatch.setattr(async_delegation, "renew_completion_delivery", _renew)
+
+    async def _two_cycles(_delay):
+        if attempts == 2:
+            runner._deferred_completion_deliveries[session_key].clear()
+
+    monkeypatch.setattr(asyncio, "sleep", _two_cycles)
+    asyncio.run(
+        _renew_deferred_completion_claim(
+            runner, session_key, "deleg_renew", "claim-1"
+        )
+    )
+
+    assert attempts == 2
+    assert "lost_renewal_claims" not in record
+
+
 def test_deferred_claim_renews_attached_siblings(monkeypatch):
     from tools import async_delegation
 

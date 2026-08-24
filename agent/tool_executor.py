@@ -41,6 +41,7 @@ from agent.tool_dispatch_helpers import (
     _append_subdir_hint_to_multimodal,
     _plan_tool_batch_segments,
     make_tool_result_message,
+    sanitize_tool_result_for_persistence,
 )
 from tools.terminal_tool import (
     get_active_env,
@@ -252,7 +253,10 @@ def _persist_final_tool_result_batch(agent, tool_messages: list[dict]) -> bool:
         return True
 
     updates = [
-        (str(message.get("tool_call_id") or ""), message.get("content"))
+        (
+            str(message.get("tool_call_id") or ""),
+            sanitize_tool_result_for_persistence(message.get("content")),
+        )
         for message in tool_messages
     ]
     persistence_cause = "unknown"

@@ -3836,7 +3836,18 @@ async def _renew_deferred_completion_claim(
         for active_delegation_id, active_claim_id in renewable_claims:
             if not active_delegation_id or not active_claim_id:
                 continue
-            if not renew_completion_delivery(active_delegation_id, active_claim_id):
+            try:
+                renewed = renew_completion_delivery(
+                    active_delegation_id, active_claim_id
+                )
+            except Exception:
+                logger.warning(
+                    "Durable completion claim renewal failed transiently: %s",
+                    active_delegation_id,
+                    exc_info=True,
+                )
+                continue
+            if not renewed:
                 logger.warning(
                     "Lost durable completion claim while parent remained active: %s",
                     active_delegation_id,
