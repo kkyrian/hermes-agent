@@ -696,7 +696,11 @@ def _inject_pending_steer_pre_api(
 
     for index in range(len(messages) - 1, -1, -1):
         message = messages[index]
-        if not isinstance(message, dict) or message.get("role") != "tool":
+        if not isinstance(message, dict):
+            continue
+        if message.get("role") == "user":
+            break
+        if message.get("role") != "tool":
             continue
         existing = message.get("content", "")
         if isinstance(existing, str):

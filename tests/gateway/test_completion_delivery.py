@@ -1844,3 +1844,53 @@ def test_failed_idle_sibling_ack_is_retained_for_retry(
     assert len(scheduled) == 1
     sibling_identity = runner._completion_delivery_identity(events[1])
     assert sibling_identity not in runner._completion_deliveries_delivered
+
+
+def test_deferred_sibling_success_records_dedupe_before_primary_ack(
+    monkeypatch,
+):
+    session_key = "agent:main:telegram:dm:12345:678"
+    primary = _distinct_async_event("deleg_primary_pending", session_key)
+    sibling = _distinct_async_event("deleg_sibling_done", session_key)
+    runner = _runner(SimpleNamespace(handle_message=AsyncMock()))
+    primary_identity = runner._completion_delivery_identity(primary)
+    sibling_identity = runner._completion_delivery_identity(sibling)
+    runner._completion_deliveries_inflight.update(
+        {primary_identity, sibling_identity}
+    )
+    record = {
+        "text": "batch",
+        "delegation_id": primary["delegation_id"],
+        "claim_id": "claim-primary",
+        "identity": primary_identity,
+        "generation": 1,
+        "source": None,
+        "parent_session_id": "",
+        "fallback_queued": False,
+        "siblings": [(sibling, "claim-sibling")],
+        "renew_task": None,
+    }
+    runner._deferred_completion_deliveries = {session_key: [record]}
+
+    def complete(delegation_id, _claim_id):
+        return delegation_id == sibling["delegation_id"]
+
+    monkeypatch.setattr(
+        "tools.async_delegation.complete_completion_delivery",
+        complete,
+    )
+
+    asyncio.run(
+        _settle_deferred_completion_deliveries(
+            runner,
+            session_key,
+            1,
+            {},
+            turn_completed=True,
+        )
+    )
+
+    assert primary_identity in runner._completion_deliveries_inflight
+    assert sibling_identity not in runner._completion_deliveries_inflight
+    assert sibling_identity in runner._completion_deliveries_delivered
+    assert record["siblings"] == []
