@@ -261,7 +261,19 @@ def _persist_final_tool_result_batch(agent, tool_messages: list[dict]) -> bool:
     ]
     persistence_cause = "unknown"
     try:
-        updated = session_db.set_tool_result_contents(session_id, updates)
+        lease_holder = getattr(agent, "_active_session_turn_lease_holder", None)
+        if lease_holder:
+            updated = session_db.set_tool_result_contents(
+                session_id,
+                updates,
+                turn_lease_holder=lease_holder,
+                turn_lease_ttl_seconds=(
+                    getattr(agent, "_active_session_turn_lease_ttl_seconds", 300.0)
+                    or 300.0
+                ),
+            )
+        else:
+            updated = session_db.set_tool_result_contents(session_id, updates)
     except Exception as exc:
         updated = 0
         try:

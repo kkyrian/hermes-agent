@@ -900,6 +900,27 @@ class TestSetLatestUserApiContent:
         finally:
             db.close()
 
+    def test_multimodal_content_backfill_rejects_stale_turn_lease(self, tmp_path):
+        from hermes_state import SessionTurnLeaseLostError
+
+        db = self._open(tmp_path)
+        original = [{"type": "text", "text": "new owner"}]
+        try:
+            db.append_message("s1", "user", content=original)
+            assert db.try_acquire_session_turn_lease("s1", "old-holder") is True
+            db.release_session_turn_lease("s1", "old-holder")
+            assert db.try_acquire_session_turn_lease("s1", "new-holder") is True
+            with pytest.raises(SessionTurnLeaseLostError):
+                db.set_latest_user_content(
+                    "s1",
+                    original,
+                    [{"type": "text", "text": "stale owner"}],
+                    turn_lease_holder="old-holder",
+                )
+            assert db.get_messages_as_conversation("s1")[0]["content"] == original
+        finally:
+            db.close()
+
 
 class TestFlushCompressedSummaryOverrideGuard:
     def _make_agent(self, db, sid):

@@ -6672,7 +6672,9 @@ class TurnRunner:
         # Open internal completion admission before publishing the live agent
         # reference, eliminating the setup race where a child finished between
         # publication and the conversation loop's first sampling boundary.
-        agent._open_internal_event_mailbox()
+        open_mailbox = getattr(agent, "_open_internal_event_mailbox", None)
+        if callable(open_mailbox):
+            open_mailbox()
         # Store agent reference for interrupt support
         ctx.agent_holder[0] = agent
         # Wire the platform thread-rename lane onto the agent, because the
@@ -27338,10 +27340,61 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             store = getattr(self, attr, None)
             if isinstance(store, dict):
                 store.pop(session_key, None)
+        self._drop_deferred_completion_deliveries_at_boundary(session_key)
         self._clear_session_boundary_security_state(session_key)
         logger.debug(
             "Cleared conversation scope for %s (%s)", session_key, reason
         )
+
+    def _drop_deferred_completion_deliveries_at_boundary(
+        self, session_key: str
+    ) -> None:
+        """Terminally retire durable completions owned by an ended conversation."""
+        lock = getattr(self, "_completion_delivery_lock", None)
+        pending = getattr(self, "_deferred_completion_deliveries", None)
+        if lock is None or not isinstance(pending, dict):
+            return
+        with lock:
+            records = list(pending.pop(session_key, []))
+        if not records:
+            return
+        from tools.async_delegation import drop_completion_delivery
+
+        for record in records:
+            renew_task = record.get("renew_task")
+            if renew_task is not None:
+                renew_task.cancel()
+            claims = [
+                (record.get("delegation_id"), record.get("claim_id")),
+                *[
+                    (str(event.get("delegation_id") or ""), sibling_claim)
+                    for event, sibling_claim in record.get("siblings", [])
+                ],
+            ]
+            for delegation_id, claim_id in claims:
+                if not delegation_id or not claim_id:
+                    continue
+                try:
+                    drop_completion_delivery(delegation_id, claim_id)
+                except Exception:
+                    logger.warning(
+                        "Could not drop durable completion at conversation boundary: %s",
+                        delegation_id,
+                        exc_info=True,
+                    )
+            identities = [record.get("identity")]
+            identity_for = getattr(self, "_completion_delivery_identity", None)
+            if callable(identity_for):
+                identities.extend(
+                    identity_for(event)
+                    for event, _claim_id in record.get("siblings", [])
+                )
+            inflight = getattr(self, "_completion_deliveries_inflight", None)
+            if isinstance(inflight, set):
+                with lock:
+                    for identity in identities:
+                        if identity is not None:
+                            inflight.discard(identity)
 
     def _clear_session_boundary_security_state(self, session_key: str) -> None:
         """Clear per-session control state that must not survive a boundary switch."""

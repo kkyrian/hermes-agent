@@ -10136,7 +10136,13 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         return self._execute_write(_do)
 
     def set_latest_user_content(
-        self, session_id: str, previous_content: Any, content: Any
+        self,
+        session_id: str,
+        previous_content: Any,
+        content: Any,
+        *,
+        turn_lease_holder: Optional[str] = None,
+        turn_lease_ttl_seconds: float = 300.0,
     ) -> int:
         """Backfill mutated content onto the newest active user row.
 
@@ -10151,6 +10157,13 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         encoded = self._encode_content(content)
 
         def _do(conn):
+            self._check_transcript_write_guards(
+                conn,
+                session_id,
+                None,
+                turn_lease_holder,
+                turn_lease_ttl_seconds,
+            )
             cursor = conn.execute(
                 "UPDATE messages SET content = ? WHERE id = ("
                 "SELECT id FROM messages "
@@ -10164,7 +10177,13 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         return self._execute_write(_do)
 
     def set_tool_result_content(
-        self, session_id: str, tool_call_id: str, content: Any
+        self,
+        session_id: str,
+        tool_call_id: str,
+        content: Any,
+        *,
+        turn_lease_holder: Optional[str] = None,
+        turn_lease_ttl_seconds: float = 300.0,
     ) -> int:
         """Replace one active tool-result row after final context budgeting.
 
@@ -10177,6 +10196,13 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         encoded = self._encode_content(content)
 
         def _do(conn):
+            self._check_transcript_write_guards(
+                conn,
+                session_id,
+                None,
+                turn_lease_holder,
+                turn_lease_ttl_seconds,
+            )
             cursor = conn.execute(
                 "UPDATE messages SET content = ? WHERE id = ("
                 "SELECT id FROM messages "
@@ -10190,7 +10216,12 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         return self._execute_write(_do)
 
     def set_tool_result_contents(
-        self, session_id: str, updates: List[tuple[str, Any]]
+        self,
+        session_id: str,
+        updates: List[tuple[str, Any]],
+        *,
+        turn_lease_holder: Optional[str] = None,
+        turn_lease_ttl_seconds: float = 300.0,
     ) -> int:
         """Atomically replace every finalized tool result in one batch.
 
@@ -10211,6 +10242,13 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             pass
 
         def _do(conn):
+            self._check_transcript_write_guards(
+                conn,
+                session_id,
+                None,
+                turn_lease_holder,
+                turn_lease_ttl_seconds,
+            )
             updated = 0
             for tool_call_id, encoded in encoded_updates:
                 cursor = conn.execute(

@@ -517,7 +517,8 @@ _RM_FLAG_PREFIX = _CMDPOS + _CMDPATH + r'rm\s+(-[^\s]*\s+)*'
 
 _HARDLINE_BLOCK_DEVICE = (
     r'/dev/(?:sd[a-z][a-z0-9]*|hd[a-z][a-z0-9]*|vd[a-z][a-z0-9]*|'
-    r'xvd[a-z][a-z0-9]*|mmcblk\d+(?:p\d+)?|nvme\d+(?:n\d+(?:p\d+)?)?|'
+    r'xvd[a-z][a-z0-9]*|mmcblk\d+(?:(?:p|boot)\d+|rpmb)?|'
+    r'nvme\d+(?:(?:c\d+)?n\d+(?:p\d+)?)?|'
     r'md\d+(?:p\d+)?|dm-\d+|mapper/[a-z0-9_.+:-]+|zvol/[a-z0-9_.+:/@-]+|'
     r'disk/by-(?:id|path|uuid|partuuid|label|partlabel)/'
     r'[a-z0-9_.+:@-]+)'
@@ -620,23 +621,35 @@ _HARDLINE_RM_CANDIDATE_RE = re.compile(
 )
 
 
-def _is_protected_rm_path(path: str) -> bool:
-    """Return whether a lexical rm operand is an unrecoverable root."""
+def _protected_rm_path_description(path: str) -> Optional[str]:
+    """Return the established hardline description for a protected path."""
     home = posixpath.normpath(os.path.expanduser("~"))
     alias = re.fullmatch(r'(?:~|\$home|\$\{home\})(?P<suffix>/.*)?', path, re.IGNORECASE)
+    home_alias = alias is not None
     if alias:
         path = home + (alias.group("suffix") or "")
     if not path.startswith("/"):
-        return False
+        return None
     normalized = "/" + posixpath.normpath(path).lstrip("/")
     protected = {"/", "/home", "/root", "/etc", "/usr", "/var", "/bin", "/sbin", "/boot", "/lib"}
     if home.startswith("/"):
         protected.add(home)
-    return normalized in protected
+    if normalized not in protected:
+        return None
+    if normalized == "/":
+        return "recursive delete of root filesystem"
+    if home_alias or normalized == home:
+        return "recursive delete of home directory"
+    return "recursive delete of system directory"
 
 
-def _has_recursive_protected_rm(command: str) -> bool:
-    """Parse rm flags and normalize operands before applying the hardline."""
+def _is_protected_rm_path(path: str) -> bool:
+    """Return whether a lexical rm operand is an unrecoverable root."""
+    return _protected_rm_path_description(path) is not None
+
+
+def _recursive_protected_rm_description(command: str) -> Optional[str]:
+    """Parse rm operands and preserve their established hardline contract."""
     for match in _HARDLINE_RM_CANDIDATE_RE.finditer(command):
         try:
             tokens = shlex.split(match.group("args"), posix=True)
@@ -656,9 +669,23 @@ def _has_recursive_protected_rm(command: str) -> bool:
                 )
                 continue
             operands.append(token)
-        if recursive and any(_is_protected_rm_path(path) for path in operands):
-            return True
-    return False
+        if recursive:
+            descriptions = [
+                _protected_rm_path_description(path) for path in operands
+            ]
+            for preferred in (
+                "recursive delete of root filesystem",
+                "recursive delete of home directory",
+                "recursive delete of system directory",
+            ):
+                if preferred in descriptions:
+                    return preferred
+    return None
+
+
+def _has_recursive_protected_rm(command: str) -> bool:
+    """Return whether parsed rm operands cross the unconditional floor."""
+    return _recursive_protected_rm_description(command) is not None
 
 
 def _has_dd_to_raw_device(command: str) -> bool:
@@ -1267,8 +1294,9 @@ def detect_hardline_command(command: str, *, _dispatch_depth: int = 0) -> tuple:
             return (True, dispatched)
         if _has_unquoted_raw_device_redirection(command_variant):
             return (True, "redirect to raw block device")
-        if _has_recursive_protected_rm(command_variant):
-            return (True, "recursive delete of root/system/home")
+        protected_rm = _recursive_protected_rm_description(command_variant)
+        if protected_rm:
+            return (True, protected_rm)
         if _has_dd_to_raw_device(command_variant):
             return (True, "dd to raw block device")
         if _has_mkfs_command(command_variant):
