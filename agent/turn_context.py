@@ -1388,6 +1388,9 @@ def build_turn_context(
                 if updated != 1:
                     persistence_failed = True
                     persistence_error_cause = "unknown"
+                    _plugin_turn_content[:] = copy.deepcopy(
+                        _multimodal_content_before_notes
+                    )
                     logger.warning(
                         "in-place compaction multimodal content backfill matched "
                         "no row for session=%s",
@@ -1395,6 +1398,9 @@ def build_turn_context(
                     )
             except Exception as exc:
                 persistence_failed = True
+                _plugin_turn_content[:] = copy.deepcopy(
+                    _multimodal_content_before_notes
+                )
                 try:
                     from hermes_state import classify_persistence_error
 
@@ -1487,6 +1493,8 @@ def build_turn_context(
             _turn_user_msg.get("content", ""), ext_prefetch_cache, plugin_user_context
         )
         if _api_content is not None and _api_content != _turn_user_msg.get("content"):
+            _had_api_content = "api_content" in _turn_user_msg
+            _previous_api_content = _turn_user_msg.get("api_content")
             _turn_user_msg["api_content"] = _api_content
             # In-place preflight compaction has ALREADY inserted this turn's
             # user row (archive_and_compact runs before prefetch/pre_llm_call
@@ -1510,6 +1518,10 @@ def build_turn_context(
                         if updated != 1:
                             persistence_failed = True
                             persistence_error_cause = "unknown"
+                            if _had_api_content:
+                                _turn_user_msg["api_content"] = _previous_api_content
+                            else:
+                                _turn_user_msg.pop("api_content", None)
                             logger.warning(
                                 "in-place compaction api_content backfill matched "
                                 "no row for session=%s",
@@ -1517,6 +1529,10 @@ def build_turn_context(
                             )
                     except Exception as exc:
                         persistence_failed = True
+                        if _had_api_content:
+                            _turn_user_msg["api_content"] = _previous_api_content
+                        else:
+                            _turn_user_msg.pop("api_content", None)
                         try:
                             from hermes_state import classify_persistence_error
 

@@ -10189,6 +10189,48 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
 
         return self._execute_write(_do)
 
+    def set_tool_result_contents(
+        self, session_id: str, updates: List[tuple[str, Any]]
+    ) -> int:
+        """Atomically replace every finalized tool result in one batch.
+
+        Any missing/mismatched row aborts the transaction so a crash or stale
+        call id cannot leave only a prefix of the provider-bound batch durable.
+        Returns the number of updated rows, or zero after an identity miss.
+        """
+        encoded_updates = [
+            (str(tool_call_id), self._encode_content(content))
+            for tool_call_id, content in updates
+        ]
+        if len({tool_call_id for tool_call_id, _ in encoded_updates}) != len(
+            encoded_updates
+        ):
+            return 0
+
+        class _BatchIdentityMiss(Exception):
+            pass
+
+        def _do(conn):
+            updated = 0
+            for tool_call_id, encoded in encoded_updates:
+                cursor = conn.execute(
+                    "UPDATE messages SET content = ? WHERE id = ("
+                    "SELECT id FROM messages "
+                    "WHERE session_id = ? AND role = 'tool' AND tool_call_id = ? "
+                    "AND active = 1 ORDER BY id DESC LIMIT 1"
+                    ")",
+                    (encoded, session_id, tool_call_id),
+                )
+                if cursor.rowcount != 1:
+                    raise _BatchIdentityMiss(tool_call_id)
+                updated += 1
+            return updated
+
+        try:
+            return self._execute_write(_do)
+        except _BatchIdentityMiss:
+            return 0
+
     def get_messages(
         self,
         session_id: str,

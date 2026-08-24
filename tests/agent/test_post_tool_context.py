@@ -590,6 +590,20 @@ def test_session_db_tool_result_update_is_scoped_by_call_id(tmp_path):
     db.close()
 
 
+def test_session_db_tool_result_batch_rolls_back_on_missing_call_id(tmp_path):
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.create_session("s1", source="cli")
+    db.append_message("s1", "tool", content="old-1", tool_call_id="call-1")
+    db.append_message("s1", "tool", content="old-2", tool_call_id="call-2")
+
+    assert db.set_tool_result_contents(
+        "s1", [("call-1", "new-1"), ("missing", "new-missing")]
+    ) == 0
+    rows = db.get_messages_as_conversation("s1")
+    assert [row["content"] for row in rows] == ["old-1", "old-2"]
+    db.close()
+
+
 def test_post_tool_context_uses_effective_execution_metadata(tmp_path):
     db = SessionDB(db_path=tmp_path / "state.db")
     db.create_session("effective", source="cli")
@@ -638,7 +652,7 @@ def test_post_tool_context_uses_effective_execution_metadata(tmp_path):
 
 def test_final_tool_result_update_failure_keeps_reason_contract():
     class LockedDB:
-        def set_tool_result_content(self, *_args):
+        def set_tool_result_contents(self, *_args):
             raise RuntimeError("database is locked")
 
     agent = SimpleNamespace(
