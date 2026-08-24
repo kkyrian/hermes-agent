@@ -3725,6 +3725,7 @@ def _defer_completion_delivery(
     generation: int,
     source: Any,
     parent_session_id: str,
+    siblings: Optional[list[tuple[dict, str]]] = None,
 ) -> None:
     """Retain a durable completion claim until the busy turn consumes it.
 
@@ -3745,7 +3746,7 @@ def _defer_completion_delivery(
         "source": source,
         "parent_session_id": parent_session_id,
         "fallback_queued": False,
-        "siblings": [],
+        "siblings": list(siblings or []),
         "renewal_delegation_id": delegation_id,
         "renewal_claim_id": claim_id,
     }
@@ -3856,25 +3857,6 @@ async def _renew_deferred_completion_claim(
                     record.setdefault("lost_renewal_claims", set()).add(
                         (active_delegation_id, active_claim_id)
                     )
-
-
-def _attach_deferred_completion_siblings(
-    runner: Any,
-    session_key: str,
-    primary_delegation_id: str,
-    siblings: list[tuple[dict, str]],
-) -> bool:
-    """Attach coalesced sibling claims to their admitted primary payload."""
-    lock = getattr(runner, "_completion_delivery_lock", None)
-    if lock is None:
-        return False
-    with lock:
-        pending = getattr(runner, "_deferred_completion_deliveries", {})
-        for record in reversed(pending.get(session_key, [])):
-            if record.get("delegation_id") == primary_delegation_id:
-                record["siblings"].extend(siblings)
-                return True
-    return False
 
 
 async def _settle_deferred_completion_deliveries(
@@ -25997,7 +25979,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         return "deliver"
 
     async def _deliver_completion_notification(
-        self, synth_text: str, evt: dict,
+        self,
+        synth_text: str,
+        evt: dict,
+        *,
+        deferred_siblings: Optional[list[tuple[dict, str]]] = None,
     ) -> Optional[bool]:
         """Deliver once per live gateway, or return False for a retry.
 
@@ -26135,6 +26121,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     ),
                     source=evt.get("_durable_delivery_source"),
                     parent_session_id=str(evt.get("parent_session_id") or ""),
+                    siblings=deferred_siblings,
                 )
                 current_state = self._peek_session_state(deferred_session_key)
                 if (
@@ -26534,42 +26521,35 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         delivered: Optional[bool] = False
         try:
             delivered = await self._deliver_completion_notification(
-                consolidated, primary_evt,
+                consolidated,
+                primary_evt,
+                deferred_siblings=siblings,
             )
         finally:
             if delivered is True:
                 deferred_session_key = str(
                     primary_evt.get("_durable_delivery_deferred_session_key") or ""
                 )
-                if deferred_session_key:
-                    attached = _attach_deferred_completion_siblings(
-                        self,
-                        deferred_session_key,
-                        str(primary_evt.get("delegation_id") or ""),
-                        siblings,
-                    )
-                    if not attached:
-                        for evt, claim_id in siblings:
-                            try:
-                                release_event_delivery(evt, claim_id)
-                            except Exception:
-                                logger.debug(
-                                    "Could not release unattached coalesced claim",
-                                    exc_info=True,
-                                )
-                        delivered = False
-                else:
+                if not deferred_session_key:
+                    acknowledged = []
+                    retrying = []
                     for evt, claim_id in siblings:
                         try:
-                            complete_event_delivery(evt, claim_id)
+                            if complete_event_delivery(evt, claim_id):
+                                acknowledged.append(evt)
+                            else:
+                                retrying.append((evt, claim_id))
                         except Exception:
+                            retrying.append((evt, claim_id))
                             logger.debug(
                                 "Could not acknowledge coalesced durable completion",
                                 exc_info=True,
                             )
                     self._record_coalesced_completion_siblings(
-                        [evt for evt, _claim_id in siblings]
+                        acknowledged
                     )
+                    for evt, claim_id in retrying:
+                        self._schedule_coalesced_completion_ack_retry(evt, claim_id)
             else:
                 # Not delivered — release every sibling claim so a retry (or
                 # another consumer) can claim it, honestly leaving the durable
@@ -26588,6 +26568,40 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     for evt, _claim_id in siblings:
                         _pr.completion_queue.put(evt)
         return delivered
+
+    def _schedule_coalesced_completion_ack_retry(
+        self, evt: dict, claim_id: str,
+    ) -> None:
+        """Retain and retry acknowledgement for an already-consumed sibling."""
+        async def _retry() -> None:
+            from tools.async_delegation import (
+                complete_event_delivery,
+                renew_completion_delivery,
+            )
+
+            delegation_id = str(evt.get("delegation_id") or "")
+            while True:
+                await asyncio.sleep(30)
+                try:
+                    if complete_event_delivery(evt, claim_id):
+                        self._record_coalesced_completion_siblings([evt])
+                        return
+                except Exception:
+                    logger.debug(
+                        "Could not retry coalesced completion acknowledgement",
+                        exc_info=True,
+                    )
+                try:
+                    renew_completion_delivery(delegation_id, claim_id)
+                except Exception:
+                    logger.debug(
+                        "Could not renew coalesced completion claim",
+                        exc_info=True,
+                    )
+
+        task = asyncio.create_task(_retry())
+        self._background_tasks.add(task)
+        task.add_done_callback(self._background_tasks.discard)
 
     async def _async_delegation_watcher(self, interval: float = 2.0) -> None:
         """Drain async-delegation completions and inject them as new turns.

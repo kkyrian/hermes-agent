@@ -1794,3 +1794,53 @@ def test_sibling_claimed_by_other_consumer_is_not_double_delivered(
     assert any(
         evt.get("delegation_id") == events[1]["delegation_id"] for evt in queued
     )
+
+
+def test_coalesced_busy_delivery_passes_siblings_into_primary_deferral(
+    monkeypatch, isolated_registry,
+):
+    events = [_distinct_async_event(f"deleg_busy_batch_{i}") for i in range(2)]
+    for event in events:
+        _persist_pending_completion(event)
+    runner = _runner(SimpleNamespace(handle_message=AsyncMock()))
+    captured = {}
+
+    async def accept(_text, _event, *, deferred_siblings=None):
+        captured["siblings"] = list(deferred_siblings or [])
+        return True
+
+    monkeypatch.setattr(runner, "_deliver_completion_notification", accept)
+
+    assert asyncio.run(runner._deliver_async_delegation_group(events)) is True
+    assert [evt["delegation_id"] for evt, _claim in captured["siblings"]] == [
+        events[1]["delegation_id"]
+    ]
+
+
+def test_failed_idle_sibling_ack_is_retained_for_retry(
+    monkeypatch, isolated_registry,
+):
+    events = [_distinct_async_event(f"deleg_ack_retry_{i}") for i in range(2)]
+    for event in events:
+        _persist_pending_completion(event)
+    runner = _runner(SimpleNamespace(handle_message=AsyncMock()))
+    scheduled = []
+
+    async def accept(_text, _event, *, deferred_siblings=None):
+        return True
+
+    monkeypatch.setattr(runner, "_deliver_completion_notification", accept)
+    monkeypatch.setattr(
+        "tools.async_delegation.complete_event_delivery",
+        lambda *_args: False,
+    )
+    monkeypatch.setattr(
+        runner,
+        "_schedule_coalesced_completion_ack_retry",
+        lambda evt, claim: scheduled.append((evt, claim)),
+    )
+
+    assert asyncio.run(runner._deliver_async_delegation_group(events)) is True
+    assert len(scheduled) == 1
+    sibling_identity = runner._completion_delivery_identity(events[1])
+    assert sibling_identity not in runner._completion_deliveries_delivered
