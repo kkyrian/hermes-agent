@@ -363,6 +363,24 @@ def test_late_steer_requeues_when_persisted_carrier_update_fails() -> None:
     assert agent._drain_pending_steer() == "owner correction"
 
 
+def test_pre_api_steer_does_not_rewrite_tool_from_earlier_turn() -> None:
+    agent = _bare_agent()
+    setattr(agent, "_pending_steer", "current correction")
+    setattr(agent, "_pending_steer_lock", threading.Lock())
+    messages = [
+        {"role": "user", "content": "old request"},
+        {"role": "assistant", "content": "", "tool_calls": []},
+        {"role": "tool", "content": "old result", "_db_persisted": True},
+        {"role": "assistant", "content": "old answer"},
+        {"role": "user", "content": "current request"},
+        {"role": "assistant", "content": "retrying"},
+    ]
+
+    assert not _inject_pending_steer_pre_api(agent, messages)
+    assert messages[2]["content"] == "old result"
+    assert agent._drain_pending_steer() == "current correction"
+
+
 def test_pre_api_persistence_failure_requeues_event_and_steer(monkeypatch) -> None:
     agent = _bare_agent()
     agent._open_internal_event_mailbox()

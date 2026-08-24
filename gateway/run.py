@@ -3989,6 +3989,7 @@ async def _settle_deferred_completion_deliveries(
                 )
 
         sibling_remaining = []
+        sibling_done = []
         for sibling_evt, sibling_claim_id in record.get("siblings", []):
             try:
                 if not complete_completion_delivery(
@@ -3996,6 +3997,8 @@ async def _settle_deferred_completion_deliveries(
                     sibling_claim_id,
                 ):
                     sibling_remaining.append((sibling_evt, sibling_claim_id))
+                else:
+                    sibling_done.append((sibling_evt, sibling_claim_id))
             except Exception:
                 sibling_remaining.append((sibling_evt, sibling_claim_id))
                 logger.warning(
@@ -4010,19 +4013,16 @@ async def _settle_deferred_completion_deliveries(
                 runner._completion_deliveries_inflight.discard(identity)
                 runner._completion_deliveries_delivered[identity] = None
                 record["identity"] = None
-            if primary_done:
-                for sibling_evt, _claim_id in record.get("siblings", []):
-                    sibling_identity = runner._completion_delivery_identity(sibling_evt)
-                    if sibling_identity is not None and (
-                        sibling_evt, _claim_id
-                    ) not in sibling_remaining:
-                        runner._completion_deliveries_inflight.discard(sibling_identity)
-                        runner._completion_deliveries_delivered[sibling_identity] = None
-                while (
-                    len(runner._completion_deliveries_delivered)
-                    > runner._completion_delivery_retention
-                ):
-                    runner._completion_deliveries_delivered.popitem(last=False)
+            for sibling_evt, _claim_id in sibling_done:
+                sibling_identity = runner._completion_delivery_identity(sibling_evt)
+                if sibling_identity is not None:
+                    runner._completion_deliveries_inflight.discard(sibling_identity)
+                    runner._completion_deliveries_delivered[sibling_identity] = None
+            while (
+                len(runner._completion_deliveries_delivered)
+                > runner._completion_delivery_retention
+            ):
+                runner._completion_deliveries_delivered.popitem(last=False)
             record["siblings"] = sibling_remaining
 
         if not primary_done or sibling_remaining:
