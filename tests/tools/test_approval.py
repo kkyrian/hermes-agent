@@ -930,6 +930,22 @@ class TestExpandedHardlineFloor:
         assert blocked is True
         assert description
 
+    @pytest.mark.parametrize(
+        "command",
+        (
+            "taskset -c 0 dd if=/dev/zero of=/dev/sda",
+            "chroot /mnt mkfs.ext4 /dev/sda",
+            "unshare --mount wipefs -a /dev/sda",
+            "setpriv --reuid 0 wipefs -a /dev/sda",
+            "pkexec --user root wipefs -a /dev/sda",
+            "doas -u root wipefs -a /dev/sda",
+        ),
+    )
+    def test_argv_launching_wrappers_preserve_hardline(self, command):
+        blocked, description = detect_hardline_command(command)
+        assert blocked is True
+        assert description
+
 
 class TestGatewayProtection:
     """Prevent agents from starting the gateway outside systemd management."""

@@ -766,6 +766,27 @@ def _iter_dispatched_command_tokens(command: str):
         "-P", "--max-procs", "-s", "--max-chars",
     }
     find_actions = {"-exec", "-execdir", "-ok", "-okdir"}
+    argv_wrappers = {
+        "chroot": ({"--userspec", "--groups"}, 1),
+        "doas": ({"-u", "-C"}, 0),
+        "pkexec": ({"--user"}, 0),
+        "setpriv": (
+            {
+                "--reuid", "--regid", "--ruid", "--euid", "--rgid", "--egid",
+                "--groups", "--inh-caps", "--ambient-caps", "--bounding-set",
+                "--securebits", "--pdeathsig", "--selinux-label", "--apparmor-profile",
+            },
+            0,
+        ),
+        "unshare": (
+            {
+                "--map-user", "--map-group", "--map-users", "--map-groups",
+                "--root", "--wd", "--setuid", "--setgid", "--monotonic",
+                "--boottime", "--propagation",
+            },
+            0,
+        ),
+    }
     for segment in _iter_top_level_shell_segments(command):
         for start, _, word in _iter_shell_command_word_spans(segment):
             tokens = _shell_segment_tokens(segment, start)
@@ -838,6 +859,49 @@ def _iter_dispatched_command_tokens(command: str):
                 while index < len(tokens) and tokens[index].startswith("-"):
                     index += 1
                 if index < len(tokens):
+                    yield tokens[index:]
+            elif executable == "taskset":
+                index = 1
+                affinity_consumed = False
+                while index < len(tokens):
+                    token = tokens[index]
+                    option, value = _split_option(token)
+                    if token in {"-h", "--help", "-V", "--version"}:
+                        index = len(tokens)
+                        break
+                    if token == "--":
+                        index += 1
+                        break
+                    if not token.startswith("-") or token == "-":
+                        break
+                    index += 1
+                    if option in {"-c", "--cpu-list"} and value is None:
+                        index += 1
+                        affinity_consumed = True
+                if not affinity_consumed and index < len(tokens):
+                    index += 1
+                if index < len(tokens):
+                    yield tokens[index:]
+            elif executable in argv_wrappers:
+                options_with_arg, operands_before_command = argv_wrappers[executable]
+                index = 1
+                help_only = False
+                while index < len(tokens):
+                    token = tokens[index]
+                    option, value = _split_option(token)
+                    if token in {"-h", "--help", "-V", "--version"}:
+                        help_only = True
+                        break
+                    if token == "--":
+                        index += 1
+                        break
+                    if not token.startswith("-") or token == "-":
+                        break
+                    index += 1
+                    if option in options_with_arg and value is None:
+                        index += 1
+                index += operands_before_command
+                if not help_only and index < len(tokens):
                     yield tokens[index:]
             elif executable == "xargs":
                 index = 1
