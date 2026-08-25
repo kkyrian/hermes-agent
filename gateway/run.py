@@ -26500,22 +26500,29 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         primary_evt, primary_text = deliverable[0]
         blocks = [primary_text]
         siblings: list[tuple[dict, str]] = []
+        siblings_owned_elsewhere: list[dict] = []
         for evt, synth_text in deliverable[1:]:
             claim_id = claim_event_delivery(evt, f"gateway-batch:{id(self)}")
             if claim_id is None:
                 # Another consumer owns this row's delivery; keep its result
-                # out of our consolidated text so it is never double-injected,
-                # but retain a pending row for retry after that lease expires.
+                # out of our consolidated text so it is never double-injected.
+                # Defer its retry decision until the primary result is known:
+                # on primary failure the caller requeues the complete group,
+                # while success/terminal drop needs one sibling-only retry.
                 if event_delivery_needs_retry(evt):
-                    _pr.completion_queue.put(evt)
+                    siblings_owned_elsewhere.append(evt)
                 continue
             siblings.append((evt, claim_id))
             blocks.append(synth_text)
 
         if not siblings:
-            return await self._deliver_completion_notification(
+            delivered = await self._deliver_completion_notification(
                 primary_text, primary_evt,
             )
+            if delivered is not False:
+                for evt in siblings_owned_elsewhere:
+                    _pr.completion_queue.put(evt)
+            return delivered
 
         consolidated = self._format_coalesced_async_delegations(blocks)
         delivered: Optional[bool] = False
@@ -26567,6 +26574,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     # still need delivery — requeue just them for the next tick.
                     for evt, _claim_id in siblings:
                         _pr.completion_queue.put(evt)
+            if delivered is not False:
+                for evt in siblings_owned_elsewhere:
+                    _pr.completion_queue.put(evt)
         return delivered
 
     def _schedule_coalesced_completion_ack_retry(

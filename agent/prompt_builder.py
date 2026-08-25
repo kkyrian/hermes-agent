@@ -12,6 +12,7 @@ import sys
 import threading
 import contextvars
 from collections import OrderedDict
+from collections.abc import Mapping
 from pathlib import Path
 
 from hermes_constants import (
@@ -1604,8 +1605,22 @@ def _load_skill_prompt_exposure_policy() -> tuple[dict, tuple]:
     try:
         from hermes_cli.config import load_config_readonly
 
-        raw_config = load_config_readonly()
-        raw_skills = raw_config.get("skills") or {}
+        loaded_config = load_config_readonly()
+        config_is_mapping = isinstance(loaded_config, Mapping)
+        raw_config = loaded_config if config_is_mapping else {}
+        raw_skills_value = raw_config.get("skills")
+        malformed_skills = (
+            not config_is_mapping
+            or (
+                raw_skills_value is not None
+                and not isinstance(raw_skills_value, Mapping)
+            )
+        )
+        raw_skills = (
+            raw_skills_value
+            if isinstance(raw_skills_value, Mapping)
+            else {}
+        )
         raw = raw_skills.get("prompt_exposure")
         if raw is None:
             raw = {}
@@ -1613,7 +1628,8 @@ def _load_skill_prompt_exposure_policy() -> tuple[dict, tuple]:
         logger.debug("Could not load skills.prompt_exposure", exc_info=True)
         raw_config = {}
         raw = {}
-    malformed_policy = not isinstance(raw, dict)
+        malformed_skills = True
+    malformed_policy = malformed_skills or not isinstance(raw, Mapping)
     if malformed_policy:
         logger.warning(
             "Invalid skills.prompt_exposure=%r; hiding skills",
@@ -1710,7 +1726,9 @@ def _load_skill_prompt_exposure_policy() -> tuple[dict, tuple]:
                 "requires_executables": sorted({str(x).strip() for x in executables if str(x).strip()}),
             }
 
-    terminal_backend = (raw_config.get("terminal") or {}).get("backend")
+    raw_terminal = raw_config.get("terminal")
+    terminal_config = raw_terminal if isinstance(raw_terminal, Mapping) else {}
+    terminal_backend = terminal_config.get("backend")
     terminal_backend = str(
         terminal_backend or os.environ.get("TERMINAL_ENV") or "local"
     ).strip().lower()

@@ -1791,9 +1791,35 @@ def test_sibling_claimed_by_other_consumer_is_not_double_delivered(
     queued = []
     while not isolated.empty():
         queued.append(isolated.get_nowait())
-    assert any(
-        evt.get("delegation_id") == events[1]["delegation_id"] for evt in queued
+    assert [evt["delegation_id"] for evt in queued] == [
+        events[1]["delegation_id"]
+    ]
+
+
+def test_failed_group_does_not_duplicate_sibling_claimed_elsewhere(
+    monkeypatch, isolated_registry,
+):
+    """The caller alone requeues a failed group; the callee adds no copy."""
+    from tools import async_delegation
+
+    isolated = queue.Queue()
+    monkeypatch.setattr(isolated_registry, "completion_queue", isolated)
+    events = [_distinct_async_event(f"deleg_retry_owned_{i}") for i in range(2)]
+    for event in events:
+        _persist_pending_completion(event)
+    assert async_delegation.claim_completion_delivery(
+        events[1]["delegation_id"], "other-consumer:claim",
     )
+
+    runner = _runner(SimpleNamespace(handle_message=AsyncMock()))
+
+    async def reject(*_args, **_kwargs):
+        return False
+
+    monkeypatch.setattr(runner, "_deliver_completion_notification", reject)
+
+    assert asyncio.run(runner._deliver_async_delegation_group(events)) is False
+    assert isolated.empty()
 
 
 def test_coalesced_busy_delivery_passes_siblings_into_primary_deferral(
