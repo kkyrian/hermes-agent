@@ -26602,7 +26602,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         exc_info=True,
                     )
                 try:
-                    renew_completion_delivery(delegation_id, claim_id)
+                    if not renew_completion_delivery(delegation_id, claim_id):
+                        return
                 except Exception:
                     logger.debug(
                         "Could not renew coalesced completion claim",
