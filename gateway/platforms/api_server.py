@@ -6405,9 +6405,6 @@ class APIServerAdapter(BasePlatformAdapter):
                         session_model=session_model,
                         confirmed_runtime_lock=confirmed_runtime_lock,
                     )
-                    agent._reload_durable_session_history = bool(
-                        durable_session_continuation
-                    )
                     if agent_ref is not None:
                         agent_ref[0] = agent
                     if active_run_id:
@@ -6430,6 +6427,7 @@ class APIServerAdapter(BasePlatformAdapter):
                         user_message=user_message,
                         conversation_history=conversation_history,
                         task_id=effective_task_id,
+                        durable_session_continuation=durable_session_continuation,
                     )
                     usage = {
                         "input_tokens": getattr(agent, "session_prompt_tokens", 0) or 0,

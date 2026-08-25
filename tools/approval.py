@@ -523,6 +523,16 @@ _HARDLINE_BLOCK_DEVICE = (
     r'disk/by-(?:id|path|uuid|partuuid|label|partlabel)/'
     r'[a-z0-9_.+:@-]+)'
 )
+
+
+def _is_hardline_block_device(path: str) -> bool:
+    """Match a raw-device path after collapsing kernel-equivalent separators."""
+    normalized = posixpath.normpath(path)
+    if path.startswith("/"):
+        normalized = "/" + normalized.lstrip("/")
+    return bool(re.fullmatch(_HARDLINE_BLOCK_DEVICE, normalized, re.IGNORECASE))
+
+
 _HARDLINE_POST_COMMAND_REDIRECTIONS = (
     r'(?:(?:\s+(?:\d*(?:>>?|<<?)|&>>?)\s*(?:&\d+|[^\s;|&)]+))*)'
 )
@@ -707,9 +717,7 @@ def _has_dd_to_raw_device(command: str) -> bool:
                     continue
                 name, target = token.split("=", 1)
                 target = target.rstrip(")]}\"'")
-                if name.lower() == "of" and re.fullmatch(
-                    _HARDLINE_BLOCK_DEVICE, target, re.IGNORECASE
-                ):
+                if name.lower() == "of" and _is_hardline_block_device(target):
                     return True
     # Top-level tokenization intentionally treats quoted strings as data, but
     # command substitutions inside double quotes still execute. Walk the
@@ -732,9 +740,7 @@ def _has_dd_to_raw_device(command: str) -> bool:
             if "=" in token:
                 name, target = token.split("=", 1)
                 target = target.rstrip(")]}\"'")
-                if name.lower() == "of" and re.fullmatch(
-                    _HARDLINE_BLOCK_DEVICE, target, re.IGNORECASE
-                ):
+                if name.lower() == "of" and _is_hardline_block_device(target):
                     return True
             pos = token_end
             if raw_token.rstrip().endswith((")", "]", "}")):
@@ -945,7 +951,7 @@ def _has_destructive_raw_device_operation(command: str) -> bool:
                 for token in tokens
             )
             if destructive and any(
-                re.fullmatch(_HARDLINE_BLOCK_DEVICE, token, re.IGNORECASE)
+                _is_hardline_block_device(token)
                 for token in tokens
             ):
                 return True
@@ -955,7 +961,7 @@ def _has_destructive_raw_device_operation(command: str) -> bool:
             if not tokens or tokens[0].lower() not in {"format", "sanitize"}:
                 continue
             if any(
-                re.fullmatch(_HARDLINE_BLOCK_DEVICE, token, re.IGNORECASE)
+                _is_hardline_block_device(token)
                 for token in tokens[1:]
             ):
                 return True
@@ -1010,7 +1016,7 @@ def _has_destructive_raw_device_operation(command: str) -> bool:
             ):
                 continue
             if any(
-                re.fullmatch(_HARDLINE_BLOCK_DEVICE, operand, re.IGNORECASE)
+                _is_hardline_block_device(operand)
                 for operand in operands
             ):
                 return True
@@ -1018,12 +1024,10 @@ def _has_destructive_raw_device_operation(command: str) -> bool:
         if target_directory:
             for source in operands:
                 target = posixpath.join(target_directory, posixpath.basename(source))
-                if re.fullmatch(_HARDLINE_BLOCK_DEVICE, target, re.IGNORECASE):
+                if _is_hardline_block_device(target):
                     return True
             continue
-        if len(operands) >= 2 and re.fullmatch(
-            _HARDLINE_BLOCK_DEVICE, operands[-1], re.IGNORECASE
-        ):
+        if len(operands) >= 2 and _is_hardline_block_device(operands[-1]):
             return True
     return False
 
@@ -1150,7 +1154,7 @@ def _has_destructive_wipefs(command: str) -> bool:
             for token in tokens
         ):
             continue
-        if any(re.fullmatch(_HARDLINE_BLOCK_DEVICE, token, re.IGNORECASE) for token in tokens):
+        if any(_is_hardline_block_device(token) for token in tokens):
             return True
     return False
 
@@ -1193,16 +1197,33 @@ def _has_destructive_storage_layer_removal(command: str) -> bool:
             command_name = executable
         if any(token in {"--help", "-h", "-?"} for token in tokens):
             continue
+        def _is_lvm_test_option(token: str) -> bool:
+            if token == "--test":
+                return True
+            if not token.startswith("-") or token.startswith("--"):
+                return False
+            for option_char in token[1:]:
+                if option_char == "S":
+                    return False
+                if option_char.lower() == "t":
+                    return True
+            return False
+
         if command_name != "zpool destroy" and any(
-            token == "--test"
+            _is_lvm_test_option(token) for token in tokens
+        ):
+            continue
+        if command_name != "zpool destroy" and any(
+            token.lower().startswith("--select=")
             or (
                 token.startswith("-")
                 and not token.startswith("--")
-                and "t" in token[1:].lower()
+                and "S" in token[1:]
+                and token.index("S") < len(token) - 1
             )
             for token in tokens
         ):
-            continue
+            return True
         end_of_options = False
         for token in tokens:
             if token == "--":
@@ -1382,7 +1403,7 @@ def detect_hardline_command(command: str, *, _dispatch_depth: int = 0) -> tuple:
             return (True, "write to or erase a raw block device")
         if _has_recursive_zfs_destroy(variant_lower):
             return (True, "destroy a ZFS or LVM storage layer")
-        if _has_destructive_storage_layer_removal(variant_lower):
+        if _has_destructive_storage_layer_removal(command_variant):
             return (True, "destroy a ZFS or LVM storage layer")
         for pattern_re, description in HARDLINE_PATTERNS_COMPILED:
             if pattern_re.search(variant_lower):
