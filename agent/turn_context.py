@@ -152,6 +152,20 @@ def consume_gateway_turn_context_notes(agent: Any) -> str:
     return notes if isinstance(notes, str) else ""
 
 
+def restage_gateway_turn_context_notes(agent: Any, notes: str) -> None:
+    """Return consumed must-deliver notes to the gateway retry boundary."""
+    if not isinstance(notes, str) or not notes:
+        return
+    pending = getattr(agent, "_gateway_turn_context_notes", "") or ""
+    if not isinstance(pending, str):
+        pending = ""
+    if pending == notes:
+        return
+    agent._gateway_turn_context_notes = (
+        notes + "\n\n" + pending if pending else notes
+    )
+
+
 def append_notes_to_multimodal_content(content: Any, notes: str) -> bool:
     """Deliver must-deliver notes on a multimodal (list) user message.
 
@@ -1410,6 +1424,7 @@ def build_turn_context(
                     _plugin_turn_content[:] = copy.deepcopy(
                         _multimodal_content_before_notes
                     )
+                    restage_gateway_turn_context_notes(agent, _gateway_notes)
                     logger.warning(
                         "in-place compaction multimodal content backfill matched "
                         "no row for session=%s",
@@ -1420,6 +1435,7 @@ def build_turn_context(
                 _plugin_turn_content[:] = copy.deepcopy(
                     _multimodal_content_before_notes
                 )
+                restage_gateway_turn_context_notes(agent, _gateway_notes)
                 try:
                     from hermes_state import classify_persistence_error
 
@@ -1558,6 +1574,7 @@ def build_turn_context(
                                 _turn_user_msg["api_content"] = _previous_api_content
                             else:
                                 _turn_user_msg.pop("api_content", None)
+                            restage_gateway_turn_context_notes(agent, _gateway_notes)
                             logger.warning(
                                 "in-place compaction api_content backfill matched "
                                 "no row for session=%s",
@@ -1569,6 +1586,7 @@ def build_turn_context(
                             _turn_user_msg["api_content"] = _previous_api_content
                         else:
                             _turn_user_msg.pop("api_content", None)
+                        restage_gateway_turn_context_notes(agent, _gateway_notes)
                         try:
                             from hermes_state import classify_persistence_error
 

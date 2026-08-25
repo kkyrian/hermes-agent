@@ -793,6 +793,8 @@ class TestPrologueMoaAndInPlaceBackfill:
 
     def test_zero_row_multimodal_backfill_is_reported_as_persistence_failure(self):
         agent = _FakeAgent()
+        must_deliver_note = "AUTO-RESET-NOTE"
+        agent._gateway_turn_context_notes = must_deliver_note
         agent.compression_enabled = True
         agent._session_db = MagicMock()
         agent._session_db.set_latest_user_content.return_value = 0
@@ -830,9 +832,12 @@ class TestPrologueMoaAndInPlaceBackfill:
         assert ctx.persistence_failed is True
         assert ctx.persistence_error_cause == "unknown"
         assert ctx.messages[ctx.current_turn_user_idx]["content"] == original
+        assert agent._gateway_turn_context_notes == must_deliver_note
 
     def test_zero_row_api_content_backfill_rolls_back_live_sidecar(self):
         agent = _FakeAgent()
+        must_deliver_note = "VOICE-CHANNEL-NOTE"
+        agent._gateway_turn_context_notes = must_deliver_note
         agent.compression_enabled = True
         agent._session_db = MagicMock()
         agent._session_db.set_latest_user_api_content.return_value = 0
@@ -864,6 +869,7 @@ class TestPrologueMoaAndInPlaceBackfill:
 
         assert ctx.persistence_failed is True
         assert "api_content" not in ctx.messages[ctx.current_turn_user_idx]
+        assert agent._gateway_turn_context_notes == must_deliver_note
 
 
 class TestSetLatestUserApiContent:

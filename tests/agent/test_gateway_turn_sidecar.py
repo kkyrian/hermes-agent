@@ -21,6 +21,7 @@ from agent.turn_context import (
     build_turn_context,
     compose_user_api_content,
     consume_gateway_turn_context_notes,
+    restage_gateway_turn_context_notes,
 )
 
 
@@ -142,6 +143,12 @@ class TestConsumeIsOneShot:
         agent = _FakeAgent()
         agent._gateway_turn_context_notes = ["not-a-string"]
         assert consume_gateway_turn_context_notes(agent) == ""
+
+    def test_restage_preserves_newer_pending_notes(self):
+        agent = _FakeAgent()
+        agent._gateway_turn_context_notes = VC_NOTE
+        restage_gateway_turn_context_notes(agent, RESET_NOTE)
+        assert agent._gateway_turn_context_notes == RESET_NOTE + "\n\n" + VC_NOTE
 
 
 class TestStringContentSidecarDelivery:
