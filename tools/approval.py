@@ -470,7 +470,7 @@ _CMDPOS = (
     r'(?:sudo\s+(?:-[^\s]+\s+)*)?'  # optional sudo with flags
     r'(?:env\s+(?:\w+=\S*\s+)*)?'   # optional env with VAR=VAL pairs
     r'(?:(?:exec|nohup|setsid|time)\s+|command\s+(?:-(?![vV](?:\s|$))[^\s]+\s+)*)*'  # optional wrapper commands
-    r'(?:(?:nice|ionice)\s+(?:(?:-[^\s]+)(?:\s+[^\s-][^\s]*)?\s+)*)*'
+    r'(?:(?:nice|ionice)\s+(?:(?:-(?!(?:h|-help)(?:\s|$))[^\s]+)(?:\s+[^\s-][^\s]*)?\s+)*)*'
     r'\s*'
 )
 _CMDPATH = r'/?(?:[a-z0-9_.+-]+/)*'
@@ -775,9 +775,13 @@ def _iter_dispatched_command_tokens(command: str):
             ).lower()
             if executable == "timeout":
                 index = 1
+                help_only = False
                 while index < len(tokens):
                     token = tokens[index]
                     option, value = _split_option(token)
+                    if token in {"-h", "--help"}:
+                        help_only = True
+                        break
                     if token == "--":
                         index += 1
                         break
@@ -787,13 +791,17 @@ def _iter_dispatched_command_tokens(command: str):
                     if option in {"-k", "--kill-after", "-s", "--signal"} and value is None:
                         index += 1
                 # timeout's first non-option operand is the duration.
-                if index + 1 < len(tokens):
+                if not help_only and index + 1 < len(tokens):
                     yield tokens[index + 1:]
             elif executable in wrapper_options_with_arg:
                 index = 1
+                help_only = False
                 while index < len(tokens):
                     token = tokens[index]
                     option, value = _split_option(token)
+                    if token in {"-h", "--help"}:
+                        help_only = True
+                        break
                     if token == "--":
                         index += 1
                         break
@@ -816,7 +824,7 @@ def _iter_dispatched_command_tokens(command: str):
                         and value is None
                     ):
                         index += 1
-                if index < len(tokens):
+                if not help_only and index < len(tokens):
                     yield tokens[index:]
             elif executable in {"command", "busybox"}:
                 index = 1
@@ -943,7 +951,7 @@ def _has_destructive_raw_device_operation(command: str) -> bool:
     for command_name, tokens in _iter_specialized_command_args(
         scan_command, {"cp", "sgdisk", "blkdiscard", "shred", "tee", "nvme"}
     ):
-        if any(token in {"-h", "--help"} for token in tokens):
+        if any(token in {"-h", "--help", "-?"} for token in tokens):
             continue
         if command_name == "sgdisk":
             destructive = any(
@@ -1134,6 +1142,8 @@ def _has_lexically_protected_find_delete(command: str) -> bool:
 def _has_destructive_wipefs(command: str) -> bool:
     """Block raw-device signature erasure while permitting read-only probes."""
     for _, tokens in _iter_specialized_command_args(command, {"wipefs"}):
+        if any(token in {"-h", "--help", "-?"} for token in tokens):
+            continue
         if any(
             token == "--no-act"
             or (
@@ -1165,6 +1175,8 @@ def _has_recursive_zfs_destroy(command: str) -> bool:
         if not tokens or tokens[0].lower() != "destroy":
             continue
         tokens = tokens[1:]
+        if any(token in {"-h", "--help", "-?"} for token in tokens):
+            continue
         recursive = False
         dry_run = False
         for token in tokens:

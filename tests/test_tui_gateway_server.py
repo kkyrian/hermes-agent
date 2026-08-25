@@ -16006,6 +16006,27 @@ def test_notification_poller_delivers_completion(monkeypatch):
             process_registry.completion_queue.get_nowait()
 
 
+def test_tui_completion_claim_renews_during_injected_turn(monkeypatch):
+    renewed = threading.Event()
+    calls = []
+    monkeypatch.setattr(server, "_DELIVERY_CLAIM_RENEW_INTERVAL_SECONDS", 0.01)
+    monkeypatch.setattr(
+        "tools.async_delegation.renew_completion_delivery",
+        lambda delegation_id, claim: (
+            calls.append((delegation_id, claim)), renewed.set(), True
+        )[-1],
+    )
+
+    result = server._run_with_delivery_claim_renewal(
+        {"type": "async_delegation", "delegation_id": "deleg-tui-long"},
+        "claim-tui-long",
+        lambda: renewed.wait(timeout=1.0) or False,
+    )
+
+    assert result is True
+    assert calls == [("deleg-tui-long", "claim-tui-long")]
+
+
 def test_notification_poller_skips_consumed(monkeypatch):
     """Already-consumed completions are not dispatched by the poller."""
     import queue as _queue_mod
