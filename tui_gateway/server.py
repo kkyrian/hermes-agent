@@ -10088,6 +10088,43 @@ def _collect_kanban_notifications(session: dict) -> list:
     return texts
 
 
+_DELIVERY_CLAIM_RENEW_INTERVAL_SECONDS = 60.0
+
+
+def _run_with_delivery_claim_renewal(evt: dict, claim: str, callback):
+    """Keep a durable delegation delivery claim alive during a TUI turn."""
+    delegation_id = str(evt.get("delegation_id") or "")
+    if evt.get("type") != "async_delegation" or not delegation_id or not claim:
+        return callback()
+
+    from tools.async_delegation import renew_completion_delivery
+
+    stop = threading.Event()
+
+    def _renew_loop() -> None:
+        while not stop.wait(_DELIVERY_CLAIM_RENEW_INTERVAL_SECONDS):
+            try:
+                renew_completion_delivery(delegation_id, claim)
+            except Exception:
+                logger.debug(
+                    "could not renew active TUI completion claim",
+                    exc_info=True,
+                )
+
+    renew_thread = threading.Thread(
+        target=_renew_loop,
+        name="hermes-tui-completion-renewal",
+        daemon=True,
+    )
+    renew_thread.start()
+    try:
+        return callback()
+    finally:
+        stop.set()
+        if renew_thread is not threading.current_thread():
+            renew_thread.join(timeout=1.0)
+
+
 def _notification_poller_loop(
     stop_event: threading.Event, sid: str, session: dict
 ) -> None:
@@ -10247,13 +10284,17 @@ def _notification_poller_loop(
         try:
             _emit("message.start", sid)
             if evt.get("type") == "async_delegation":
-                _run_prompt_submit(
-                    rid,
-                    sid,
-                    session,
-                    text,
-                    display_kind="async_delegation_complete",
-                    display_metadata=_async_delegation_display_metadata(evt),
+                _run_with_delivery_claim_renewal(
+                    evt,
+                    _claim,
+                    lambda: _run_prompt_submit(
+                        rid,
+                        sid,
+                        session,
+                        text,
+                        display_kind="async_delegation_complete",
+                        display_metadata=_async_delegation_display_metadata(evt),
+                    ),
                 )
             else:
                 _run_prompt_submit(rid, sid, session, text)
@@ -10328,13 +10369,17 @@ def _notification_poller_loop(
         try:
             _emit("message.start", sid)
             if evt.get("type") == "async_delegation":
-                _run_prompt_submit(
-                    rid,
-                    sid,
-                    session,
-                    text,
-                    display_kind="async_delegation_complete",
-                    display_metadata=_async_delegation_display_metadata(evt),
+                _run_with_delivery_claim_renewal(
+                    evt,
+                    _claim,
+                    lambda: _run_prompt_submit(
+                        rid,
+                        sid,
+                        session,
+                        text,
+                        display_kind="async_delegation_complete",
+                        display_metadata=_async_delegation_display_metadata(evt),
+                    ),
                 )
             else:
                 _run_prompt_submit(rid, sid, session, text)
@@ -11604,7 +11649,11 @@ def _run_prompt_submit(
                     continue
                 try:
                     _emit("message.start", sid)
-                    _run_prompt_submit(rid, sid, session, synth)
+                    _run_with_delivery_claim_renewal(
+                        _evt,
+                        _claim,
+                        lambda: _run_prompt_submit(rid, sid, session, synth),
+                    )
                     complete_event_delivery(_evt, _claim)
                 except Exception as _n_exc:
                     release_event_delivery(_evt, _claim)
