@@ -8635,6 +8635,7 @@ class AIAgent:
         persist_user_display_kind: Optional[str] = None,
         persist_user_display_metadata: Optional[Dict[str, Any]] = None,
         moa_config: Optional[dict[str, Any]] = None,
+        durable_session_continuation: Optional[bool] = None,
     ) -> Dict[str, Any]:
         """Forwarder — see ``agent.conversation_loop.run_conversation``."""
         # A review deliberately shares this agent's session_id for prompt-cache
@@ -8885,7 +8886,12 @@ class AIAgent:
                 # completed turn. Stateless API requests deliberately keep the
                 # caller-supplied history authoritative even when their
                 # sandbox-reuse fingerprint happens to match an existing row.
-                if getattr(self, "_reload_durable_session_history", True):
+                reload_durable_history = (
+                    conversation_history is None
+                    if durable_session_continuation is None
+                    else bool(durable_session_continuation)
+                )
+                if reload_durable_history:
                     latest_session_id = _turn_db.resolve_resume_session_id(session_id)
                     if latest_session_id:
                         self.session_id = latest_session_id

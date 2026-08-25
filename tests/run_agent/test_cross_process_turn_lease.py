@@ -96,6 +96,7 @@ def test_run_conversation_acquires_then_reloads_latest_tip(monkeypatch):
         agent,
         "new message",
         conversation_history=[{"role": "user", "content": "stale"}],
+        durable_session_continuation=True,
     )
 
     assert result["final_response"] == "ok"
@@ -141,6 +142,7 @@ def test_immediate_lease_acquisition_still_reloads_durable_history(monkeypatch):
         agent,
         "new message",
         conversation_history=[{"role": "user", "content": "stale cached"}],
+        durable_session_continuation=True,
     )
 
     assert result["final_response"] == "ok"
@@ -156,7 +158,6 @@ def test_immediate_lease_acquisition_still_reloads_durable_history(monkeypatch):
 def test_stateless_caller_history_survives_existing_durable_row(monkeypatch):
     db = _DB()
     agent = _agent_with_db(db, platform="api_server")
-    agent._reload_durable_session_history = False
     observed = {}
 
     def fake_run(_agent, _message, _system, history, *_args, **_kwargs):
@@ -175,6 +176,31 @@ def test_stateless_caller_history_survives_existing_durable_row(monkeypatch):
     assert result["final_response"] == "ok"
     assert observed["history"] is request_history
     assert [event[0] for event in db.events] == ["acquire", "release"]
+
+
+def test_explicit_public_history_is_caller_authoritative_by_default(monkeypatch):
+    db = _DB()
+    agent = _agent_with_db(db)
+    observed = {}
+
+    def fake_run(_agent, _message, _system, history, *_args, **_kwargs):
+        observed["history"] = history
+        return {"final_response": "ok", "messages": history, "failed": False}
+
+    monkeypatch.setattr("agent.conversation_loop.run_conversation", fake_run)
+    branch_history = [{"role": "user", "content": "caller branch"}]
+
+    result = AIAgent.run_conversation(
+        agent,
+        "new message",
+        conversation_history=branch_history,
+    )
+
+    assert result["final_response"] == "ok"
+    assert observed["history"] is branch_history
+    assert [event[0] for event in db.events] == ["acquire", "release"]
+
+
 def test_run_conversation_acquires_lease_when_session_probe_raises(monkeypatch):
     """A locked / non-WAL get_session must not skip the durable lease."""
     db = _DB()
@@ -207,6 +233,7 @@ def test_run_conversation_acquires_lease_when_session_probe_raises(monkeypatch):
         agent,
         "new message",
         conversation_history=[{"role": "user", "content": "stale"}],
+        durable_session_continuation=True,
     )
 
     assert result["final_response"] == "ok"
@@ -627,6 +654,7 @@ def test_run_conversation_exposes_holder_for_fenced_flush(monkeypatch):
         agent,
         "new message",
         conversation_history=[{"role": "user", "content": "durable latest"}],
+        durable_session_continuation=True,
     )
 
     assert result["final_response"] == "done"

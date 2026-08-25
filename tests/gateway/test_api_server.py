@@ -390,6 +390,7 @@ class TestAgentExecution:
             user_message="hello",
             conversation_history=[],
             task_id="session-123",
+            durable_session_continuation=True,
         )
 
     @pytest.mark.asyncio
