@@ -763,6 +763,8 @@ def finalize_turn(
         _leftover_internal_events = _close_internal_mailbox()
         if _leftover_internal_events:
             result["pending_internal_events"] = _leftover_internal_events
+    if getattr(agent, "_internal_event_projection_awaiting_sample", False):
+        result["internal_events_pending_sample"] = True
     agent._response_was_previewed = False
 
     # Include interrupt message if one triggered the interrupt

@@ -4407,6 +4407,7 @@ def apply_pending_internal_events_to_tool_results(
         blocks = list(content) if isinstance(content, list) else []
         blocks.append({"type": "text", "text": marker.lstrip()})
         messages[target_idx]["content"] = blocks
+    agent._internal_event_projection_awaiting_sample = True
     _ra().logger.info(
         "Delivered %d internal event(s) in final tool-result carrier",
         len(pending),

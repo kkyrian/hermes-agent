@@ -318,6 +318,25 @@ def test_pre_api_boundary_merges_late_completion_into_internal_context() -> None
     assert messages[-1]["content"] == "first completion\n\nsecond completion"
     assert agent._repair_message_sequence(messages) == 0
     assert agent._take_internal_events_at_boundary() == []
+    assert agent._internal_event_projection_awaiting_sample is True
+
+
+def test_pre_api_projection_rollback_restores_sample_marker() -> None:
+    agent = _bare_agent()
+    agent._open_internal_event_mailbox()
+    assert agent.enqueue_internal_event("late completion")
+    messages = [
+        {"role": "assistant", "tool_calls": [{"id": "call-1"}]},
+        {"role": "tool", "tool_call_id": "call-1", "content": "tool output"},
+    ]
+
+    assert _inject_pending_internal_events_pre_api(agent, messages)
+    assert agent._internal_event_projection_awaiting_sample is True
+
+    _rollback_pre_api_internal_projection(agent)
+
+    assert agent._internal_event_projection_awaiting_sample is False
+    assert agent._take_internal_events_at_boundary() == ["late completion"]
 
 
 def test_pre_api_boundary_updates_an_already_persisted_tool_carrier() -> None:

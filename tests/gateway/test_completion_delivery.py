@@ -84,6 +84,10 @@ def _async_event(delegation_id="deleg_duplicate"):
 def test_failed_turn_is_not_durable_completion() -> None:
     assert not _turn_completed_durably({"result": "present"}, {"failed": True})
     assert not _turn_completed_durably(None, {"failed": False})
+    assert not _turn_completed_durably(
+        {"result": "present"},
+        {"failed": False, "internal_events_pending_sample": True},
+    )
     assert _turn_completed_durably({"result": "present"}, {"failed": False})
 
 
