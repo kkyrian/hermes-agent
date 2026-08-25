@@ -155,6 +155,19 @@ def test_early_return_attaches_undelivered_internal_events() -> None:
     assert agent.enqueue_internal_event("too late") is False
 
 
+def test_early_return_marks_projected_internal_events_as_unsampled() -> None:
+    agent = _bare_agent()
+    agent._open_internal_event_mailbox()
+    agent._internal_event_projection_awaiting_sample = True
+
+    result = agent._finalize_internal_event_mailbox(
+        {"final_response": "interrupted before provider response", "messages": []}
+    )
+
+    assert result["internal_events_pending_sample"] is True
+    assert "pending_internal_events" not in result
+
+
 def test_exception_exit_preserves_events_for_gateway_harvest() -> None:
     agent = _bare_agent()
     agent._open_internal_event_mailbox()

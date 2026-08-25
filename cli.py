@@ -13087,7 +13087,10 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                     "could not harvest failed-turn CLI completions",
                     exc_info=True,
                 )
-        turn_failed = bool(result.get("failed"))
+        turn_failed = bool(
+            result.get("failed")
+            or result.get("internal_events_pending_sample")
+        )
         for event, claim, message in claims:
             if message in remaining:
                 remaining.remove(message)
