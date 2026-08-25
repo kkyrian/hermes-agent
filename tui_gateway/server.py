@@ -11049,6 +11049,8 @@ def _run_prompt_submit(
                 _run_params = {}
             if "task_id" in _run_params:
                 run_kwargs["task_id"] = session["session_key"]
+            if "durable_session_continuation" in _run_params:
+                run_kwargs["durable_session_continuation"] = True
             if display_kind and "persist_user_display_kind" in _run_params:
                 run_kwargs["persist_user_display_kind"] = display_kind
                 run_kwargs["persist_user_display_metadata"] = display_metadata

@@ -16748,6 +16748,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                         task_id=self.session_id,
                         persist_user_message=_persist_clean_user_message,
                         moa_config=_moa_cfg,
+                        durable_session_continuation=True,
                     )
                     if getattr(self, "_pending_moa_disable_after_turn", False):
                         _restore = getattr(self, "_pending_moa_restore_model", None) or {}
@@ -21175,6 +21176,7 @@ def _run_kanban_goal_loop_q(cli: "HermesCLI", first_response: str) -> None:
         result = cli.agent.run_conversation(
             user_message=prompt,
             conversation_history=cli.conversation_history,
+            durable_session_continuation=True,
         )
         # Keep session_id in sync if mid-run compression rotated it.
         if (
@@ -21721,6 +21723,7 @@ def main(
                             result = cli.agent.run_conversation(
                                 user_message=effective_query,
                                 conversation_history=cli.conversation_history,
+                                durable_session_continuation=True,
                             )
                         except KeyboardInterrupt:
                             _emit_interrupted_session_end(cli, reason="keyboard_interrupt")

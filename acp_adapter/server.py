@@ -2077,6 +2077,7 @@ class HermesACPAgent(acp.Agent):
                     conversation_history=state.history,
                     task_id=session_id,
                     persist_user_message=user_text or "[Image attachment]",
+                    durable_session_continuation=True,
                 )
                 return result
             except Exception as e:
