@@ -1630,6 +1630,7 @@ def _load_skill_prompt_exposure_policy() -> tuple[dict, tuple]:
         raw = {}
         malformed_skills = True
     malformed_policy = malformed_skills or not isinstance(raw, Mapping)
+    policy_fail_closed = malformed_policy
     if malformed_policy:
         logger.warning(
             "Invalid skills.prompt_exposure=%r; hiding skills",
@@ -1678,6 +1679,7 @@ def _load_skill_prompt_exposure_policy() -> tuple[dict, tuple]:
         else:
             tiers[name] = next(iter(declared))
     if malformed_tier_container:
+        policy_fail_closed = True
         default = "hidden"
         tiers = {name: "hidden" for name in tiers}
 
@@ -1685,6 +1687,7 @@ def _load_skill_prompt_exposure_policy() -> tuple[dict, tuple]:
     raw_conditional_value = raw.get("conditional")
     raw_conditional = raw_conditional_value or {}
     if raw_conditional_value is not None and not isinstance(raw_conditional_value, dict):
+        policy_fail_closed = True
         default = "hidden"
         tiers = {name: "hidden" for name in tiers}
     if isinstance(raw_conditional, dict):
@@ -1701,7 +1704,7 @@ def _load_skill_prompt_exposure_policy() -> tuple[dict, tuple]:
                 }
                 continue
             tier = str(spec.get("tier") or tiers.get(name) or default).strip().lower()
-            if name in ambiguous_memberships:
+            if policy_fail_closed or name in ambiguous_memberships:
                 tier = "hidden"
             if tier not in _SKILL_EXPOSURE_TIERS:
                 tier = "hidden"

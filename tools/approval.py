@@ -913,19 +913,30 @@ def _is_protected_find_path(path: str) -> bool:
     return "/" + posixpath.normpath(path).lstrip("/") in protected
 
 
+def _iter_specialized_command_args(command: str, command_names: set[str]):
+    """Yield wrapper-aware executable names and argument vectors."""
+    for segment in _iter_top_level_shell_segments(command):
+        for word_start, _, word in _iter_shell_command_word_spans(segment):
+            executable = os.path.basename(
+                _deobfuscate_shell_word_for_detection(word)
+            ).lower()
+            if executable not in command_names:
+                continue
+            tokens = _shell_segment_tokens(segment, word_start)
+            if tokens:
+                yield executable, tokens[1:]
+
+
 def _has_destructive_raw_device_operation(command: str) -> bool:
-    """Detect raw-device cp/sgdisk operations independent of option order."""
+    """Detect raw-device writes after assignments and option-bearing wrappers."""
     scan_command = re.sub(
         r"(?<!\S)\d*(?:>&|<&)\d+(?=\s|$)",
         lambda match: " " * len(match.group(0)),
         command,
     )
-    for match in _HARDLINE_RAW_DEVICE_COMMAND_RE.finditer(scan_command):
-        try:
-            tokens = shlex.split(match.group("args"), posix=True)
-        except ValueError:
-            continue
-        command_name = match.group("command").lower()
+    for command_name, tokens in _iter_specialized_command_args(
+        scan_command, {"cp", "sgdisk", "blkdiscard", "shred", "tee", "nvme"}
+    ):
         if any(token in {"-h", "--help"} for token in tokens):
             continue
         if command_name == "sgdisk":
@@ -957,6 +968,12 @@ def _has_destructive_raw_device_operation(command: str) -> bool:
         for index, token in enumerate(tokens):
             if skip_next:
                 skip_next = False
+                continue
+            if (
+                token.isdigit()
+                and index + 1 < len(tokens)
+                and re.fullmatch(r"[<>]+", tokens[index + 1])
+            ):
                 continue
             redirection = re.fullmatch(
                 r"\d*(?:>{1,2}|<{1,3}|&>{1,2})(?P<target>.*)", token
@@ -1013,11 +1030,7 @@ def _has_destructive_raw_device_operation(command: str) -> bool:
 
 def _has_lexically_protected_find_delete(command: str) -> bool:
     """Detect any protected find root after lexical ``.``/``..`` collapse."""
-    for match in _HARDLINE_FIND_CANDIDATE_RE.finditer(command):
-        try:
-            tokens = shlex.split(match.group("args"), posix=True)
-        except ValueError:
-            continue
+    for _, tokens in _iter_specialized_command_args(command, {"find"}):
         index = 0
         while index < len(tokens):
             token = tokens[index]
@@ -1106,11 +1119,7 @@ def _has_lexically_protected_find_delete(command: str) -> bool:
 
 def _has_destructive_wipefs(command: str) -> bool:
     """Block raw-device signature erasure while permitting read-only probes."""
-    for match in _HARDLINE_WIPEFS_CANDIDATE_RE.finditer(command):
-        try:
-            tokens = shlex.split(match.group("args"), posix=True)
-        except ValueError:
-            continue
+    for _, tokens in _iter_specialized_command_args(command, {"wipefs"}):
         if any(
             token == "--no-act"
             or (
@@ -1138,11 +1147,10 @@ def _has_destructive_wipefs(command: str) -> bool:
 
 def _has_recursive_zfs_destroy(command: str) -> bool:
     """Detect real recursive ZFS destruction while permitting dry-run probes."""
-    for match in _HARDLINE_ZFS_DESTROY_CANDIDATE_RE.finditer(command):
-        try:
-            tokens = shlex.split(match.group("args"), posix=True)
-        except ValueError:
+    for _, tokens in _iter_specialized_command_args(command, {"zfs"}):
+        if not tokens or tokens[0].lower() != "destroy":
             continue
+        tokens = tokens[1:]
         recursive = False
         dry_run = False
         for token in tokens:
@@ -1163,12 +1171,16 @@ def _has_recursive_zfs_destroy(command: str) -> bool:
 
 def _has_destructive_storage_layer_removal(command: str) -> bool:
     """Block real pool/LVM removal while permitting help and dry-run modes."""
-    for match in _HARDLINE_STORAGE_DESTROY_CANDIDATE_RE.finditer(command):
-        try:
-            tokens = shlex.split(match.group("args"), posix=True)
-        except ValueError:
-            continue
-        command_name = match.group("command").lower()
+    for executable, tokens in _iter_specialized_command_args(
+        command, {"zpool", "lvremove", "vgremove", "pvremove"}
+    ):
+        if executable == "zpool":
+            if not tokens or tokens[0].lower() != "destroy":
+                continue
+            command_name = "zpool destroy"
+            tokens = tokens[1:]
+        else:
+            command_name = executable
         if any(token in {"--help", "-h", "-?"} for token in tokens):
             continue
         if command_name != "zpool destroy" and any(

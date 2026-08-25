@@ -1034,6 +1034,9 @@ class TestSkillPromptExposure:
             lambda: {"skills": {"prompt_exposure": {
                 "default": "description",
                 tier_key: {"secret-skill": True},
+                "conditional": {
+                    "secret-skill": {"tier": "description"},
+                },
             }}},
         )
 
