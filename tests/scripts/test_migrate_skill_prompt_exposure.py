@@ -81,6 +81,45 @@ def test_apply_backup_and_rollback(tmp_path):
     assert json.loads(manifest.read_text())["backup_config"]
 
 
+def test_rollback_preserves_unrelated_config_edits(tmp_path):
+    home = tmp_path / "profile"
+    home.mkdir()
+    config = home / "config.yaml"
+    config.write_text(
+        "model:\n  default: before\nskills:\n  other: retained\n",
+        encoding="utf-8",
+    )
+    policy = tmp_path / "policy.yaml"
+    _policy(policy)
+
+    applied = MOD.apply_policy(home, policy, apply=True, allow_live=False)
+    current = yaml.safe_load(config.read_text(encoding="utf-8"))
+    current["model"]["default"] = "after"
+    current["skills"]["later"] = True
+    config.write_text(yaml.safe_dump(current, sort_keys=False), encoding="utf-8")
+
+    MOD.rollback(Path(applied["manifest"]), apply=True, allow_live=False)
+
+    rolled_back = yaml.safe_load(config.read_text(encoding="utf-8"))
+    assert rolled_back["model"]["default"] == "after"
+    assert rolled_back["skills"] == {"other": "retained", "later": True}
+
+
+def test_rollback_refuses_changed_prompt_exposure(tmp_path):
+    home = tmp_path / "profile"
+    home.mkdir()
+    policy = tmp_path / "policy.yaml"
+    _policy(policy)
+    applied = MOD.apply_policy(home, policy, apply=True, allow_live=False)
+    config = home / "config.yaml"
+    current = yaml.safe_load(config.read_text(encoding="utf-8"))
+    current["skills"]["prompt_exposure"]["default"] = "description"
+    config.write_text(yaml.safe_dump(current, sort_keys=False), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="changed after apply"):
+        MOD.rollback(Path(applied["manifest"]), apply=True, allow_live=False)
+
+
 def test_rapid_successive_applies_use_distinct_backup_directories(tmp_path):
     home = tmp_path / "profile"
     home.mkdir()

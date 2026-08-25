@@ -914,6 +914,22 @@ class TestExpandedHardlineFloor:
         command = "cat <<EOF\necho x > /dev/sda\nEOF"
         assert detect_hardline_command(command) == (False, None)
 
+    def test_quoted_heredoc_destructive_text_remains_literal_data(self):
+        command = "cat <<'EOF'\nwipefs -a /dev/sda\nEOF"
+        assert detect_hardline_command(command) == (False, None)
+
+    @pytest.mark.parametrize(
+        "command",
+        (
+            "env --split-string='wipefs -a /dev/sda'",
+            "env -S'mkfs.ext4 /dev/sda'",
+        ),
+    )
+    def test_env_split_string_payload_is_hardline(self, command):
+        blocked, description = detect_hardline_command(command)
+        assert blocked is True
+        assert description
+
 
 class TestGatewayProtection:
     """Prevent agents from starting the gateway outside systemd management."""

@@ -28,6 +28,7 @@ from typing import Optional
 from hermes_cli.config import cfg_get
 
 from tools.interrupt import is_interrupted
+from tools.shell_heredoc import strip_inert_heredoc_bodies
 from utils import env_var_enabled, is_truthy_value
 
 logger = logging.getLogger(__name__)
@@ -1387,6 +1388,13 @@ def detect_hardline_command(command: str, *, _dispatch_depth: int = 0) -> tuple:
     """
     if _command_parser_limit_exceeded(command):
         return (True, _PARSER_LIMIT_DESCRIPTION)
+    command = strip_inert_heredoc_bodies(command)
+    for payload in _env_split_string_payloads(command):
+        blocked, description = detect_hardline_command(
+            payload, _dispatch_depth=_dispatch_depth + 1
+        )
+        if blocked:
+            return (True, description)
     normalized = _normalize_command_for_detection(command)
     _, malformed_grep = _grep_safe_detection_variant(normalized)
     if malformed_grep:
@@ -3122,6 +3130,36 @@ def _iter_shell_command_word_spans(command: str):
                 pos = word_end
                 continue
             break
+
+
+def _env_split_string_payloads(command: str):
+    """Yield inline/positional GNU ``env -S`` command payloads."""
+    for command_start in _iter_shell_command_starts(command):
+        try:
+            words = shlex.split(command[command_start:], posix=True)
+        except ValueError:
+            continue
+        if not words or posixpath.basename(words[0]).lower() != "env":
+            continue
+        index = 1
+        while index < len(words):
+            word = words[index]
+            lower = word.lower()
+            if lower == "--":
+                break
+            if lower in {"-s", "--split-string"}:
+                if index + 1 < len(words):
+                    yield words[index + 1]
+                break
+            if lower.startswith("--split-string="):
+                yield word.split("=", 1)[1]
+                break
+            if lower.startswith("-s") and len(word) > 2:
+                yield word[2:]
+                break
+            if not lower.startswith("-"):
+                break
+            index += 1
 
 
 def _command_detection_variants(command: str):

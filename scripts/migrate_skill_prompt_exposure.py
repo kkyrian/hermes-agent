@@ -170,6 +170,15 @@ def apply_policy(home: Path, fragment: Path, *, apply: bool, allow_live: bool) -
         **report,
         "backup_config": str(backup_config),
         "config_existed": config_existed,
+        "skills_existed": isinstance(config.get("skills"), dict),
+        "prompt_exposure_existed": isinstance(config.get("skills"), dict)
+        and "prompt_exposure" in config["skills"],
+        "previous_prompt_exposure": (
+            config["skills"].get("prompt_exposure")
+            if isinstance(config.get("skills"), dict)
+            else None
+        ),
+        "applied_prompt_exposure": policy,
     }
     manifest_path = backup_dir / "manifest.json"
     _atomic_json_write(manifest_path, manifest)
@@ -209,8 +218,27 @@ def rollback(manifest_path: Path, *, apply: bool, allow_live: bool) -> dict:
     }
     if not apply:
         return report
-    if manifest.get("config_existed"):
-        _atomic_copy(backup_config, config_path)
+    current = _load_yaml(config_path)
+    current_skills = current.get("skills")
+    if current_skills is not None and not isinstance(current_skills, dict):
+        raise ValueError("current config skills must remain a mapping")
+    skills = dict(current_skills or {})
+    expected_applied = manifest.get("applied_prompt_exposure")
+    if expected_applied is not None and skills.get("prompt_exposure") != expected_applied:
+        raise ValueError(
+            "current skills.prompt_exposure changed after apply; refusing rollback"
+        )
+    if manifest.get("prompt_exposure_existed"):
+        skills["prompt_exposure"] = manifest.get("previous_prompt_exposure")
+    else:
+        skills.pop("prompt_exposure", None)
+    updated = dict(current)
+    if skills or manifest.get("skills_existed"):
+        updated["skills"] = skills
+    else:
+        updated.pop("skills", None)
+    if updated or manifest.get("config_existed"):
+        _atomic_yaml_write(config_path, updated)
     else:
         config_path.unlink(missing_ok=True)
     return report
