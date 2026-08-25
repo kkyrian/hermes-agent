@@ -1872,6 +1872,35 @@ def test_failed_idle_sibling_ack_is_retained_for_retry(
     assert sibling_identity not in runner._completion_deliveries_delivered
 
 
+def test_coalesced_ack_retry_stops_after_losing_claim(monkeypatch):
+    runner = _runner(SimpleNamespace(handle_message=AsyncMock()))
+    event = _distinct_async_event("deleg_lost_ack_claim")
+    renewals = []
+
+    async def immediate_sleep(_delay):
+        return None
+
+    monkeypatch.setattr("gateway.run.asyncio.sleep", immediate_sleep)
+    monkeypatch.setattr(
+        "tools.async_delegation.complete_event_delivery", lambda *_args: False
+    )
+    monkeypatch.setattr(
+        "tools.async_delegation.renew_completion_delivery",
+        lambda delegation_id, claim_id: renewals.append(
+            (delegation_id, claim_id)
+        ) or False,
+    )
+
+    async def exercise():
+        runner._schedule_coalesced_completion_ack_retry(event, "lost-claim")
+        await asyncio.gather(*list(runner._background_tasks))
+
+    asyncio.run(exercise())
+
+    assert renewals == [(event["delegation_id"], "lost-claim")]
+    assert runner._background_tasks == set()
+
+
 def test_deferred_sibling_success_records_dedupe_before_primary_ack(
     monkeypatch,
 ):

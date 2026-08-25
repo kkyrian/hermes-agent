@@ -151,6 +151,30 @@ def test_immediate_lease_acquisition_still_reloads_durable_history(monkeypatch):
         "reload",
         "release",
     ]
+
+
+def test_stateless_caller_history_survives_existing_durable_row(monkeypatch):
+    db = _DB()
+    agent = _agent_with_db(db, platform="api_server")
+    agent._reload_durable_session_history = False
+    observed = {}
+
+    def fake_run(_agent, _message, _system, history, *_args, **_kwargs):
+        observed["history"] = history
+        return {"final_response": "ok", "messages": history, "failed": False}
+
+    monkeypatch.setattr("agent.conversation_loop.run_conversation", fake_run)
+    request_history = [{"role": "user", "content": "request authoritative"}]
+
+    result = AIAgent.run_conversation(
+        agent,
+        "new message",
+        conversation_history=request_history,
+    )
+
+    assert result["final_response"] == "ok"
+    assert observed["history"] is request_history
+    assert [event[0] for event in db.events] == ["acquire", "release"]
 def test_run_conversation_acquires_lease_when_session_probe_raises(monkeypatch):
     """A locked / non-WAL get_session must not skip the durable lease."""
     db = _DB()

@@ -2365,6 +2365,41 @@ class TestSessionIdHeader:
             # History must come from DB, not from the request body
             assert call_kwargs["conversation_history"] == db_history
             assert call_kwargs["user_message"] == "new question"
+            assert call_kwargs["durable_session_continuation"] is True
+
+    @pytest.mark.asyncio
+    async def test_derived_session_id_keeps_request_history_authoritative(
+        self, adapter
+    ):
+        mock_result = {"final_response": "OK", "messages": [], "api_calls": 1}
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(
+                adapter, "_run_agent", new_callable=AsyncMock
+            ) as mock_run:
+                mock_run.return_value = (
+                    mock_result,
+                    {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
+                )
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    json={
+                        "model": "hermes-agent",
+                        "messages": [
+                            {"role": "user", "content": "request history"},
+                            {"role": "assistant", "content": "request reply"},
+                            {"role": "user", "content": "new question"},
+                        ],
+                    },
+                )
+
+            assert resp.status == 200
+            call_kwargs = mock_run.call_args.kwargs
+            assert call_kwargs["conversation_history"] == [
+                {"role": "user", "content": "request history"},
+                {"role": "assistant", "content": "request reply"},
+            ]
+            assert call_kwargs["durable_session_continuation"] is False
 
 
 # ---------------------------------------------------------------------------

@@ -5058,14 +5058,21 @@ def _retry_deferred_completion_ack(
             _forget_queued_deferred_completion(cli, item)
             return True
     delegation_id = str(item.event.get("delegation_id") or "")
+    renewed = False
     if delegation_id:
         try:
-            renew_completion_delivery(delegation_id, item.claim)
+            renewed = bool(
+                renew_completion_delivery(delegation_id, item.claim)
+            )
         except Exception:
+            renewed = None
             logging.debug(
                 "could not renew deferred CLI completion acknowledgement claim",
                 exc_info=True,
             )
+    if renewed is False:
+        _forget_queued_deferred_completion(cli, item)
+        return False
     timer = threading.Timer(
         30,
         _retry_deferred_completion_ack,

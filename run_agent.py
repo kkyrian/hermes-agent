@@ -8882,16 +8882,19 @@ class AIAgent:
                 # Resolve and reload only AFTER admission. Immediate acquisition
                 # proves the session is idle now, not that this long-lived
                 # process's cached transcript includes the previous owner's
-                # completed turn.
-                latest_session_id = _turn_db.resolve_resume_session_id(session_id)
-                if latest_session_id:
-                    self.session_id = latest_session_id
-                    task_context["session_id"] = latest_session_id
-                conversation_history = _turn_db.get_messages_as_conversation(
-                    self.session_id,
-                    repair_alternation=True,
-                    include_row_ids=True,
-                )
+                # completed turn. Stateless API requests deliberately keep the
+                # caller-supplied history authoritative even when their
+                # sandbox-reuse fingerprint happens to match an existing row.
+                if getattr(self, "_reload_durable_session_history", True):
+                    latest_session_id = _turn_db.resolve_resume_session_id(session_id)
+                    if latest_session_id:
+                        self.session_id = latest_session_id
+                        task_context["session_id"] = latest_session_id
+                    conversation_history = _turn_db.get_messages_as_conversation(
+                        self.session_id,
+                        repair_alternation=True,
+                        include_row_ids=True,
+                    )
 
                 # Long model/tool/compression turns outlive a fixed TTL. Refresh
                 # in a daemon thread; holder-qualified UPDATE and DELETE fence a

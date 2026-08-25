@@ -4401,6 +4401,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 tool_complete_callback=_on_tool_complete,
                 agent_ref=agent_ref,
                 gateway_session_key=gateway_session_key,
+                durable_session_continuation=bool(provided_session_id),
                 **agent_overrides,
                 route=route,
             ))
@@ -4422,6 +4423,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 ephemeral_system_prompt=system_prompt,
                 session_id=session_id,
                 gateway_session_key=gateway_session_key,
+                durable_session_continuation=bool(provided_session_id),
                 **agent_overrides,
                 route=route,
             )
@@ -6338,6 +6340,7 @@ class APIServerAdapter(BasePlatformAdapter):
         requested_runtime: Optional[Dict[str, Any]] = None,
         route_source: str = "global",
         confirmed_runtime_lock: bool = False,
+        durable_session_continuation: bool = True,
     ) -> tuple:
         """
         Create an agent and run a conversation in a thread executor.
@@ -6399,6 +6402,9 @@ class APIServerAdapter(BasePlatformAdapter):
                         route=route,
                         session_model=session_model,
                         confirmed_runtime_lock=confirmed_runtime_lock,
+                    )
+                    agent._reload_durable_session_history = bool(
+                        durable_session_continuation
                     )
                     if agent_ref is not None:
                         agent_ref[0] = agent
