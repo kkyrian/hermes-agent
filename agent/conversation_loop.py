@@ -592,6 +592,9 @@ def _rollback_pre_api_internal_projection(agent) -> None:
         target["content"] = projection.get("original_content", "")
     _requeue_pending_internal_events(agent, projection.get("events") or [])
     _requeue_pending_steer(agent, projection.get("steer"))
+    agent._internal_event_projection_awaiting_sample = bool(
+        projection.get("previously_awaiting_sample", False)
+    )
     agent._pre_api_internal_projection = None
 
 
@@ -639,7 +642,11 @@ def _inject_pending_internal_events_pre_api(agent, messages: list) -> bool:
         "original_content": original_content,
         "events": events,
         "steer": steer,
+        "previously_awaiting_sample": bool(
+            getattr(agent, "_internal_event_projection_awaiting_sample", False)
+        ),
     }
+    agent._internal_event_projection_awaiting_sample = True
 
     # This boundary can race after the tool row was incrementally written.
     # Append-only session flushing deliberately skips stamped rows, so update
@@ -3644,6 +3651,10 @@ def run_conversation(
                     continue  # Retry the API call
 
                 agent._turn_received_provider_response = True
+                # Durable internal-completion claims may retire only after a
+                # successful provider response proves the injected evidence
+                # was actually sampled. Projection alone is not consumption.
+                agent._internal_event_projection_awaiting_sample = False
 
                 # Check finish_reason before proceeding
                 if agent.api_mode == "codex_responses":

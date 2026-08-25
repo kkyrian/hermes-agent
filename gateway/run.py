@@ -4050,7 +4050,11 @@ async def _settle_deferred_completion_deliveries(
 def _turn_completed_durably(result_holder_value: Any, result: Any) -> bool:
     """Failed and missing turns must retain durable claims for replay."""
     return result_holder_value is not None and not bool(
-        isinstance(result, dict) and result.get("failed")
+        isinstance(result, dict)
+        and (
+            result.get("failed")
+            or result.get("internal_events_pending_sample")
+        )
     )
 
 
@@ -6517,9 +6521,21 @@ class TurnRunner:
         # _handle_message_with_agent (auto-reset note, first-contact
         # intro, voice-channel change).  Assigned unconditionally so a
         # reused cached agent never replays a stale note.
-        agent._gateway_turn_context_notes = "\n\n".join(
-            self._runner._consume_pending_turn_sidecar_notes(ctx.session_key)
+        _retained_gateway_notes = getattr(
+            agent, "_gateway_turn_context_notes", ""
+        ) or ""
+        _fresh_gateway_notes = self._runner._consume_pending_turn_sidecar_notes(
+            ctx.session_key
         )
+        _gateway_note_parts = []
+        for _note in [_retained_gateway_notes, *_fresh_gateway_notes]:
+            if (
+                isinstance(_note, str)
+                and _note
+                and _note not in _gateway_note_parts
+            ):
+                _gateway_note_parts.append(_note)
+        agent._gateway_turn_context_notes = "\n\n".join(_gateway_note_parts)
 
         _bg_review_release = threading.Event()
         _bg_review_pending: list[str] = []
