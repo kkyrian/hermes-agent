@@ -499,6 +499,39 @@ def test_cli_completion_leftover_is_requeued_before_acknowledgement(monkeypatch)
     assert released == []
 
 
+def test_cli_unsampled_projection_releases_claim_for_retry(monkeypatch):
+    cli = HermesCLI.__new__(HermesCLI)
+    cli._pending_input = queue.Queue()
+    event = {"type": "async_delegation", "delegation_id": "deleg-unsampled"}
+    cli._admitted_process_notification_claims = [
+        (event, "unsampled-claim", "completion evidence")
+    ]
+    cli._stop_admitted_process_notification_renewal = MagicMock()
+    completion_queue = queue.Queue()
+    completed = []
+    released = []
+    monkeypatch.setattr(
+        "tools.process_registry.process_registry.completion_queue",
+        completion_queue,
+    )
+    monkeypatch.setattr(
+        "tools.async_delegation.complete_event_delivery",
+        lambda evt, claim: completed.append((evt, claim)) or True,
+    )
+    monkeypatch.setattr(
+        "tools.async_delegation.release_event_delivery",
+        lambda evt, claim: released.append((evt, claim)) or True,
+    )
+
+    cli._settle_admitted_process_notifications(
+        {"internal_events_pending_sample": True}
+    )
+
+    assert completion_queue.get_nowait() is event
+    assert released == [(event, "unsampled-claim")]
+    assert completed == []
+
+
 def test_cli_completion_claim_is_released_when_turn_has_no_result(monkeypatch):
     cli = HermesCLI.__new__(HermesCLI)
     cli._pending_input = queue.Queue()

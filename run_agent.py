@@ -4055,14 +4055,20 @@ class AIAgent:
     ) -> Optional[Dict[str, Any]]:
         """Close turn admission and preserve any completion not yet sampled."""
         leftovers = self._close_internal_event_mailbox()
-        if not leftovers:
-            return result
         if isinstance(result, dict):
-            existing = result.get("pending_internal_events")
-            if isinstance(existing, list):
-                existing.extend(leftovers)
-            else:
-                result["pending_internal_events"] = leftovers
+            if leftovers:
+                existing = result.get("pending_internal_events")
+                if isinstance(existing, list):
+                    existing.extend(leftovers)
+                else:
+                    result["pending_internal_events"] = leftovers
+            if getattr(
+                self, "_internal_event_projection_awaiting_sample", False
+            ):
+                result["internal_events_pending_sample"] = True
+            return result
+
+        if not leftovers:
             return result
 
         lock = getattr(self, "_pending_internal_events_lock", None)
