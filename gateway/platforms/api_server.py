@@ -5514,6 +5514,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 tool_complete_callback=_on_tool_complete,
                 agent_ref=agent_ref,
                 gateway_session_key=gateway_session_key,
+                durable_session_continuation=False,
                 **agent_overrides,
                 route=route,
             ))
@@ -5549,6 +5550,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 ephemeral_system_prompt=instructions,
                 session_id=session_id,
                 gateway_session_key=gateway_session_key,
+                durable_session_continuation=False,
                 **agent_overrides,
                 route=route,
             )

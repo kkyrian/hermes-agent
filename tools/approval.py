@@ -1032,17 +1032,26 @@ def _has_lexically_protected_find_delete(command: str) -> bool:
     """Detect any protected find root after lexical ``.``/``..`` collapse."""
     for _, tokens in _iter_specialized_command_args(command, {"find"}):
         index = 0
+        paths = []
         while index < len(tokens):
             token = tokens[index]
-            token_lower = token.lower()
-            if token_lower in {"-h", "-l", "-p", "--"} or token_lower.startswith("-o"):
+            if token == "--":
+                index += 1
+                break
+            if token in {"-E", "-H", "-L", "-P", "-X", "-d", "-s", "-x"}:
                 index += 1
                 continue
-            if token_lower == "-d" and index + 1 < len(tokens):
+            if token.startswith("-O"):
+                index += 1
+                continue
+            if token == "-D" and index + 1 < len(tokens):
+                index += 2
+                continue
+            if token == "-f" and index + 1 < len(tokens):
+                paths.append(tokens[index + 1])
                 index += 2
                 continue
             break
-        paths = []
         while index < len(tokens):
             path = tokens[index]
             if path.startswith("-") or path in {"!", "("}:
@@ -1081,10 +1090,11 @@ def _has_lexically_protected_find_delete(command: str) -> bool:
                 and index + 1 < len(tokens)
             ):
                 selector = tokens[index + 1]
-                literal = re.sub(r"[.*?\[\]{}()^$+|\\]", "", selector)
-                selector_root = literal.rstrip("/") or "/"
-                if literal and not _is_protected_find_path(selector_root):
-                    has_narrowing_before_delete = True
+                if not any(char in selector for char in "[{"):
+                    literal = re.sub(r"[.*?\[\]{}()^$+|\\]", "", selector)
+                    selector_root = literal.rstrip("/") or "/"
+                    if literal and not _is_protected_find_path(selector_root):
+                        has_narrowing_before_delete = True
             if token_lower in one_arg_predicates:
                 index += 2
                 continue
@@ -2073,13 +2083,45 @@ _COMMAND_WRAPPER_WORDS = {
     "command",
     "builtin",
 }
-_SUDO_OPTIONS_WITH_ARG = {
-    "-c", "--close-from",
-    "-g", "--group",
-    "-h", "--host",
-    "-p", "--prompt",
-    "-u", "--user",
+_WRAPPER_OPTIONS_WITH_ARG = {
+    "sudo": {
+        "-c", "--close-from",
+        "-d", "--chdir",
+        "-g", "--group",
+        "-h", "--host",
+        "-p", "--prompt",
+        "-r", "--chroot", "--role",
+        "-t", "--command-timeout", "--type",
+        "-u", "--other-user", "--user",
+    },
+    "env": {
+        "-c", "--chdir",
+        "-u", "--unset",
+    },
 }
+
+
+def _wrapper_option_takes_next_arg(wrapper: str, token: str) -> bool:
+    """Return whether a sudo/env option consumes the following shell word."""
+    if "=" in token:
+        return False
+    option_name = token.lower()
+    if option_name in _WRAPPER_OPTIONS_WITH_ARG[wrapper]:
+        return True
+    if not option_name.startswith("-") or option_name.startswith("--"):
+        return False
+
+    operand_options = {
+        "sudo": set("cdghprtu"),
+        "env": set("cu"),
+    }[wrapper]
+    cluster = option_name[1:]
+    for index, option_char in enumerate(cluster):
+        if option_char in operand_options:
+            # A suffix in the same shell word is the option operand; only an
+            # operand-taking option at the end consumes the following word.
+            return index == len(cluster) - 1
+    return False
 
 _INTERPRETER_EXEC_FLAGS = {
     "python": {"-c"},
@@ -3003,7 +3045,7 @@ def _iter_shell_command_word_spans(command: str):
     for command_start in _iter_shell_command_starts(command):
         pos = command_start
         prefix_words = 0
-        skip_wrapper_options = False
+        option_wrapper: str | None = None
         skip_next_wrapper_arg = False
         while prefix_words < 12:
             word_start, word_end, word = _read_shell_word(command, pos)
@@ -3016,11 +3058,20 @@ def _iter_shell_command_word_spans(command: str):
                 pos = word_end
                 prefix_words += 1
                 continue
-            if skip_wrapper_options and lower_word.startswith("-"):
+            if option_wrapper and lower_word.startswith("-"):
                 option_name = lower_word.split("=", 1)[0]
+                if option_name == "--":
+                    option_wrapper = None
+                    pos = word_end
+                    prefix_words += 1
+                    continue
+                if option_wrapper == "env" and option_name in {"-s", "--split-string"}:
+                    option_wrapper = None
+                    pos = word_end
+                    prefix_words += 1
+                    continue
                 skip_next_wrapper_arg = (
-                    "=" not in lower_word
-                    and option_name in _SUDO_OPTIONS_WITH_ARG
+                    _wrapper_option_takes_next_arg(option_wrapper, lower_word)
                 )
                 pos = word_end
                 prefix_words += 1
@@ -3030,11 +3081,11 @@ def _iter_shell_command_word_spans(command: str):
             prefix_words += 1
 
             if lower_word in _COMMAND_WRAPPER_WORDS:
-                skip_wrapper_options = lower_word in {"sudo", "env"}
+                option_wrapper = lower_word if lower_word in {"sudo", "env"} else None
                 pos = word_end
                 continue
             if _ENV_ASSIGNMENT_RE.fullmatch(deobfuscated):
-                skip_wrapper_options = False
+                option_wrapper = None
                 pos = word_end
                 continue
             break

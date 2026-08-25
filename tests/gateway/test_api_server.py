@@ -1350,6 +1350,40 @@ class TestResponsesEndpoint:
             assert data["output"][0]["content"][0]["type"] == "output_text"
             assert data["output"][0]["content"][0]["text"] == "Paris is the capital of France."
 
+    @pytest.mark.asyncio
+    async def test_explicit_responses_history_stays_request_authoritative(self, adapter):
+        mock_result = {"final_response": "OK", "messages": [], "api_calls": 1}
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (
+                    mock_result,
+                    {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
+                )
+                resp = await cli.post(
+                    "/v1/responses",
+                    json={
+                        "model": "hermes-agent",
+                        "conversation_history": [
+                            {"role": "user", "content": "request history"},
+                            {"role": "assistant", "content": "request reply"},
+                        ],
+                        "input": [
+                            {"role": "user", "content": "array history"},
+                            {"role": "user", "content": "new question"},
+                        ],
+                    },
+                )
+
+            assert resp.status == 200
+            call_kwargs = mock_run.call_args.kwargs
+            assert call_kwargs["conversation_history"] == [
+                {"role": "user", "content": "request history"},
+                {"role": "assistant", "content": "request reply"},
+                {"role": "user", "content": "array history"},
+            ]
+            assert call_kwargs["durable_session_continuation"] is False
+
 
     @pytest.mark.asyncio
     async def test_previous_response_id_stores_compressed_transcript_directly(self, adapter):
