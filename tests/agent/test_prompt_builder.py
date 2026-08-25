@@ -1010,6 +1010,19 @@ class TestSkillPromptExposure:
 
         assert "secret-skill" not in build_skills_system_prompt()
 
+    @pytest.mark.parametrize("skills", ([], ["description"], "description", True))
+    def test_malformed_skills_section_hides_all_skills(
+        self, monkeypatch, tmp_path, skills
+    ):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        self._write_skill(tmp_path, "secret-skill", "Do not expose")
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config_readonly",
+            lambda: {"skills": skills},
+        )
+
+        assert "secret-skill" not in build_skills_system_prompt()
+
     @pytest.mark.parametrize("tier_key", ("hidden", "names_only", "descriptions"))
     def test_malformed_prompt_exposure_tier_container_hides_all_skills(
         self, monkeypatch, tmp_path, tier_key
@@ -1158,6 +1171,34 @@ class TestSkillPromptExposure:
             "hermes_cli.config.load_config_readonly",
             lambda: {
                 "terminal": {"backend": "local"},
+                "skills": {"prompt_exposure": {"conditional": {
+                    "opencode": {
+                        "tier": "description",
+                        "requires_toolsets": ["terminal"],
+                        "requires_executables": ["opencode"],
+                    }
+                }}},
+            },
+        )
+        monkeypatch.setattr(
+            "agent.prompt_builder.shutil.which", lambda _name: "/bin/opencode"
+        )
+
+        assert "opencode: Delegate to OpenCode" in build_skills_system_prompt(
+            available_toolsets={"terminal"}
+        )
+
+    @pytest.mark.parametrize("terminal", (["docker"], "docker", True))
+    def test_malformed_terminal_section_falls_back_without_crashing(
+        self, monkeypatch, tmp_path, terminal
+    ):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("TERMINAL_ENV", "local")
+        self._write_skill(tmp_path, "opencode", "Delegate to OpenCode")
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config_readonly",
+            lambda: {
+                "terminal": terminal,
                 "skills": {"prompt_exposure": {"conditional": {
                     "opencode": {
                         "tier": "description",
