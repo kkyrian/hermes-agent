@@ -28,7 +28,9 @@ class _CapturingSessionDB:
 
     def append_messages_batch(self, session_id, messages, **kwargs):
         for message in messages:
+            row_id = len(self.rows) + 1
             row = {
+                "id": row_id,
                 "role": message.get("role"),
                 "content": message.get("content"),
                 "display_kind": message.get("display_kind"),
@@ -36,18 +38,27 @@ class _CapturingSessionDB:
             if message.get("tool_call_id") is not None:
                 row["tool_call_id"] = message["tool_call_id"]
             self.rows.append(row)
+            message["_row_id"] = row_id
         start = len(self.rows) - len(messages) + 1
         return list(range(start, len(self.rows) + 1))
 
     def flush_token_counts(self) -> None:
         return None
 
-    def set_tool_result_contents(self, session_id, updates):
+    def set_tool_result_contents(
+        self, session_id, updates, *, message_row_ids=None, **kwargs
+    ):
         del session_id
         staged = []
-        for tool_call_id, content in updates:
+        for index, (tool_call_id, content) in enumerate(updates):
             matches = [
-                row for row in self.rows if row.get("tool_call_id") == tool_call_id
+                row
+                for row in self.rows
+                if row.get("tool_call_id") == tool_call_id
+                and (
+                    message_row_ids is None
+                    or row.get("id") == message_row_ids[index]
+                )
             ]
             if len(matches) != 1:
                 return 0

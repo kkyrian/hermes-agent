@@ -2383,7 +2383,13 @@ class AIAgent:
                     )
                     or 300.0,
                 )
-                for _written in _batch_msgs:
+                for _stored, _written in zip(_batch_rows, _batch_msgs):
+                    # SessionDB stamps the exact inserted row id on the
+                    # sanitized batch copy. Carry it back to the live message
+                    # so later in-place tool-result finalization cannot fall
+                    # back to a reused tool_call_id from an older turn.
+                    if _stored.get("_row_id") is not None:
+                        _written["_row_id"] = _stored["_row_id"]
                     _written[_DB_PERSISTED_MARKER] = True
             # The intrinsic markers are now the sole source of truth. Reset the
             # one-shot seed so no id() outlives this flush to alias a message
