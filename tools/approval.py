@@ -717,7 +717,7 @@ def _has_dd_to_raw_device(command: str) -> bool:
                 if "=" not in token:
                     continue
                 name, target = token.split("=", 1)
-                target = target.rstrip(")]}\"'")
+                target = target.rstrip(")]}\"'`")
                 if name.lower() == "of" and _is_hardline_block_device(target):
                     return True
     # Top-level tokenization intentionally treats quoted strings as data, but
@@ -740,7 +740,7 @@ def _has_dd_to_raw_device(command: str) -> bool:
                 break
             if "=" in token:
                 name, target = token.split("=", 1)
-                target = target.rstrip(")]}\"'")
+                target = target.rstrip(")]}\"'`")
                 if name.lower() == "of" and _is_hardline_block_device(target):
                     return True
             pos = token_end
@@ -2758,6 +2758,20 @@ def _embedded_shell_payloads(command: str):
                     yield payload
 
 
+def _eval_shell_payloads(command: str):
+    """Yield command strings executed by the shell ``eval`` builtin."""
+    for segment in _iter_top_level_shell_segments(command):
+        for start, _, word in _iter_shell_command_word_spans(segment):
+            executable = os.path.basename(
+                _deobfuscate_shell_word_for_detection(word)
+            ).lower()
+            if executable != "eval":
+                continue
+            tokens = _shell_segment_tokens(segment, start)
+            if tokens and len(tokens) > 1:
+                yield " ".join(tokens[1:])
+
+
 def _skip_shell_whitespace(command: str, pos: int) -> int:
     while pos < len(command) and command[pos].isspace():
         pos += 1
@@ -3272,6 +3286,11 @@ def _command_detection_variants(command: str):
                 if marked_payload != payload and marked_payload not in seen:
                     seen.add(marked_payload)
                     yield marked_payload
+                pending.append(payload)
+        for payload in _eval_shell_payloads(variant):
+            if payload and payload not in seen:
+                seen.add(payload)
+                yield payload
                 pending.append(payload)
     for payload in _embedded_shell_payloads(normalized):
         if payload in seen:

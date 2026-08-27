@@ -678,6 +678,20 @@ def test_hardline_list_is_small():
     )
 
 
+@pytest.mark.parametrize(
+    "command",
+    [
+        "`dd if=/dev/zero of=/dev/sda`",
+        'eval "cat f > /dev/sda"',
+        'bash -c \'eval "cat f > /dev/sda"\'',
+    ],
+)
+def test_wrapped_raw_device_writes_remain_hardline(command):
+    blocked, description = detect_hardline_command(command)
+    assert blocked, command
+    assert "raw block device" in description
+
+
 # =========================================================================
 # Sudo stdin guard — blocks "sudo -S" without SUDO_PASSWORD
 # =========================================================================
