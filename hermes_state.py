@@ -10195,6 +10195,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         tool_call_id: str,
         content: Any,
         *,
+        message_row_id: Optional[int] = None,
         turn_lease_holder: Optional[str] = None,
         turn_lease_ttl_seconds: float = 300.0,
     ) -> int:
@@ -10204,7 +10205,10 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         enforcement. If budgeting or a post-budget plugin context changes the
         provider-bound content afterward, the durable row must be updated to
         those exact bytes or a resumed session will replay a different prefix.
-        ``tool_call_id`` is the stable per-turn identity; returns 0 or 1.
+        ``message_row_id`` is the exact identity stamped by the incremental
+        append.  Legacy callers may omit it and retain latest-call-id lookup;
+        turn-finalization callers must pass it so reused deterministic call
+        ids can never rewrite an older turn. Returns 0 or 1.
         """
         encoded = self._encode_content(content)
 
@@ -10216,14 +10220,22 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 turn_lease_holder,
                 turn_lease_ttl_seconds,
             )
-            cursor = conn.execute(
-                "UPDATE messages SET content = ? WHERE id = ("
-                "SELECT id FROM messages "
-                "WHERE session_id = ? AND role = 'tool' AND tool_call_id = ? "
-                "AND active = 1 ORDER BY id DESC LIMIT 1"
-                ")",
-                (encoded, session_id, tool_call_id),
-            )
+            if message_row_id is not None:
+                cursor = conn.execute(
+                    "UPDATE messages SET content = ? WHERE id = ? "
+                    "AND session_id = ? AND role = 'tool' "
+                    "AND tool_call_id = ? AND active = 1",
+                    (encoded, int(message_row_id), session_id, tool_call_id),
+                )
+            else:
+                cursor = conn.execute(
+                    "UPDATE messages SET content = ? WHERE id = ("
+                    "SELECT id FROM messages "
+                    "WHERE session_id = ? AND role = 'tool' AND tool_call_id = ? "
+                    "AND active = 1 ORDER BY id DESC LIMIT 1"
+                    ")",
+                    (encoded, session_id, tool_call_id),
+                )
             return cursor.rowcount
 
         return self._execute_write(_do)
@@ -10233,14 +10245,17 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         session_id: str,
         updates: List[tuple[str, Any]],
         *,
+        message_row_ids: Optional[List[int]] = None,
         turn_lease_holder: Optional[str] = None,
         turn_lease_ttl_seconds: float = 300.0,
     ) -> int:
         """Atomically replace every finalized tool result in one batch.
 
         Any missing/mismatched row aborts the transaction so a crash or stale
-        call id cannot leave only a prefix of the provider-bound batch durable.
-        Returns the number of updated rows, or zero after an identity miss.
+        identity cannot leave only a prefix of the provider-bound batch
+        durable. ``message_row_ids`` scopes the update to the exact rows
+        stamped by the incremental append; legacy callers may omit it. Returns
+        the number of updated rows, or zero after an identity miss.
         """
         encoded_updates = [
             (str(tool_call_id), self._encode_content(content))
@@ -10250,6 +10265,17 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             encoded_updates
         ):
             return 0
+        if message_row_ids is not None:
+            if len(message_row_ids) != len(encoded_updates):
+                return 0
+            try:
+                exact_row_ids = [int(row_id) for row_id in message_row_ids]
+            except (TypeError, ValueError):
+                return 0
+            if len(set(exact_row_ids)) != len(exact_row_ids):
+                return 0
+        else:
+            exact_row_ids = None
 
         class _BatchIdentityMiss(Exception):
             pass
@@ -10263,15 +10289,28 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 turn_lease_ttl_seconds,
             )
             updated = 0
-            for tool_call_id, encoded in encoded_updates:
-                cursor = conn.execute(
-                    "UPDATE messages SET content = ? WHERE id = ("
-                    "SELECT id FROM messages "
-                    "WHERE session_id = ? AND role = 'tool' AND tool_call_id = ? "
-                    "AND active = 1 ORDER BY id DESC LIMIT 1"
-                    ")",
-                    (encoded, session_id, tool_call_id),
-                )
+            for index, (tool_call_id, encoded) in enumerate(encoded_updates):
+                if exact_row_ids is not None:
+                    cursor = conn.execute(
+                        "UPDATE messages SET content = ? WHERE id = ? "
+                        "AND session_id = ? AND role = 'tool' "
+                        "AND tool_call_id = ? AND active = 1",
+                        (
+                            encoded,
+                            exact_row_ids[index],
+                            session_id,
+                            tool_call_id,
+                        ),
+                    )
+                else:
+                    cursor = conn.execute(
+                        "UPDATE messages SET content = ? WHERE id = ("
+                        "SELECT id FROM messages "
+                        "WHERE session_id = ? AND role = 'tool' AND tool_call_id = ? "
+                        "AND active = 1 ORDER BY id DESC LIMIT 1"
+                        ")",
+                        (encoded, session_id, tool_call_id),
+                    )
                 if cursor.rowcount != 1:
                     raise _BatchIdentityMiss(tool_call_id)
                 updated += 1

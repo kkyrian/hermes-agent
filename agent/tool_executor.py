@@ -259,6 +259,22 @@ def _persist_final_tool_result_batch(agent, tool_messages: list[dict]) -> bool:
         )
         for message in tool_messages
     ]
+    row_ids = [message.get("_row_id") for message in tool_messages]
+    exact_row_ids = (
+        [int(row_id) for row_id in row_ids]
+        if row_ids and all(isinstance(row_id, int) and not isinstance(row_id, bool) for row_id in row_ids)
+        else None
+    )
+    # A stamped durable message without its exact row identity is unsafe to
+    # backfill by call id: deterministic/reused ids could select an older turn
+    # after an incremental persistence failure.  Unstamped test/legacy callers
+    # retain the compatibility lookup.
+    if exact_row_ids is None and any(
+        message.get("_db_persisted") for message in tool_messages
+    ):
+        agent._incremental_persistence_failed = True
+        agent._last_persistence_error_cause = "unknown"
+        return False
     persistence_cause = "unknown"
     try:
         lease_holder = getattr(agent, "_active_session_turn_lease_holder", None)
@@ -266,6 +282,7 @@ def _persist_final_tool_result_batch(agent, tool_messages: list[dict]) -> bool:
             updated = session_db.set_tool_result_contents(
                 session_id,
                 updates,
+                message_row_ids=exact_row_ids,
                 turn_lease_holder=lease_holder,
                 turn_lease_ttl_seconds=(
                     getattr(agent, "_active_session_turn_lease_ttl_seconds", 300.0)
@@ -273,7 +290,9 @@ def _persist_final_tool_result_batch(agent, tool_messages: list[dict]) -> bool:
                 ),
             )
         else:
-            updated = session_db.set_tool_result_contents(session_id, updates)
+            updated = session_db.set_tool_result_contents(
+                session_id, updates, message_row_ids=exact_row_ids
+            )
     except Exception as exc:
         updated = 0
         try:

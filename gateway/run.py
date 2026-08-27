@@ -3896,6 +3896,16 @@ async def _settle_deferred_completion_deliveries(
             parent_session_id = str(record.get("parent_session_id") or "")
             if parent_session_id:
                 verdict = await runner._classify_completion_target(parent_session_id)
+                # Classification can await while /new or /reset clears the
+                # conversation-scoped snapshot.  Never act on (or later merge
+                # back) a record that the boundary deliberately removed.
+                with lock:
+                    current = getattr(
+                        runner, "_deferred_completion_deliveries", {}
+                    ).get(session_key, [])
+                    record_is_current = any(item is record for item in current)
+                if not record_is_current:
+                    continue
                 if verdict == "terminal":
                     from tools.async_delegation import drop_completion_delivery
 
@@ -4042,6 +4052,8 @@ async def _settle_deferred_completion_deliveries(
         pending = getattr(runner, "_deferred_completion_deliveries", {})
         current = pending.get(session_key, [])
         snapshot_ids = {id(record) for record in records}
+        current_ids = {id(record) for record in current}
+        remaining = [record for record in remaining if id(record) in current_ids]
         newly_deferred = [record for record in current if id(record) not in snapshot_ids]
         merged = [*remaining, *newly_deferred]
         if merged:

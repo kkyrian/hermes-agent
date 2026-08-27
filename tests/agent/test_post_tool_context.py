@@ -9,6 +9,7 @@ import pytest
 from agent.tool_executor import (
     _cache_post_tool_context_metadata,
     _finalize_keyboard_interrupt_batch,
+    _persist_final_tool_result_batch,
     _finalize_tool_result_batch,
     _finalize_tool_boundary,
 )
@@ -604,6 +605,68 @@ def test_session_db_tool_result_batch_rolls_back_on_missing_call_id(tmp_path):
     ) == 0
     rows = db.get_messages_as_conversation("s1")
     assert [row["content"] for row in rows] == ["old-1", "old-2"]
+    db.close()
+
+
+def test_session_db_tool_result_batch_uses_exact_rows_across_reused_call_ids(tmp_path):
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.create_session("s1", source="cli")
+    old_row = db.append_message(
+        "s1", "tool", content="old-turn", tool_call_id="call-1"
+    )
+    current_row = db.append_message(
+        "s1", "tool", content="current-turn", tool_call_id="call-1"
+    )
+
+    assert db.set_tool_result_contents(
+        "s1", [("call-1", "final-current")], message_row_ids=[current_row]
+    ) == 1
+    rows = db.get_messages_as_conversation("s1", include_row_ids=True)
+    assert [(row["_row_id"], row["content"]) for row in rows] == [
+        (old_row, "old-turn"),
+        (current_row, "final-current"),
+    ]
+    db.close()
+
+
+def test_session_db_tool_result_batch_refuses_missing_exact_row(tmp_path):
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.create_session("s1", source="cli")
+    old_row = db.append_message(
+        "s1", "tool", content="old-turn", tool_call_id="call-1"
+    )
+
+    assert db.set_tool_result_contents(
+        "s1", [("call-1", "wrong-turn")], message_row_ids=[old_row + 1]
+    ) == 0
+    assert db.get_messages_as_conversation("s1")[0]["content"] == "old-turn"
+    db.close()
+
+
+def test_final_tool_result_persistence_targets_stamped_current_row(tmp_path):
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.create_session("s1", source="cli")
+    old_row = db.append_message(
+        "s1", "tool", content="old-turn", tool_call_id="call-1"
+    )
+    current_row = db.append_message(
+        "s1", "tool", content="current-turn", tool_call_id="call-1"
+    )
+    message = {
+        "role": "tool",
+        "tool_call_id": "call-1",
+        "content": "final-current",
+        "_db_persisted": True,
+        "_row_id": current_row,
+    }
+    agent = SimpleNamespace(session_id="s1", _session_db=db)
+
+    assert _persist_final_tool_result_batch(agent, [message]) is True
+    rows = db.get_messages_as_conversation("s1", include_row_ids=True)
+    assert [(row["_row_id"], row["content"]) for row in rows] == [
+        (old_row, "old-turn"),
+        (current_row, "final-current"),
+    ]
     db.close()
 
 
