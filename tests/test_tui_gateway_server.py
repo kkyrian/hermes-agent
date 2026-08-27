@@ -5944,6 +5944,45 @@ def test_notification_poller_live_loop_requeues_foreign_completion_for_owner(
     finally:
         server._sessions.pop("sid-a-live-handoff", None)
         server._sessions.pop("sid-b-live-handoff", None)
+
+
+def test_notification_poller_releases_busy_flag_when_durable_claim_is_foreign(
+    monkeypatch,
+):
+    import queue as _queue_mod
+
+    from tools import async_delegation
+    from tools.process_registry import process_registry
+
+    sid = "sid-foreign-durable-claim"
+    session = _session(session_key="session-foreign-durable-claim")
+    event = {
+        "type": "async_delegation",
+        "delegation_id": "deleg-foreign-claim",
+        "session_key": session["session_key"],
+        "summary": "finished elsewhere",
+    }
+    isolated_queue: _queue_mod.Queue = _queue_mod.Queue()
+    isolated_queue.put(event)
+    monkeypatch.setattr(process_registry, "completion_queue", isolated_queue)
+    monkeypatch.setattr(server, "_get_db", lambda: None)
+    monkeypatch.setattr(server, "_emit", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(async_delegation, "claim_event_delivery", lambda *_args: None)
+    monkeypatch.setattr(
+        async_delegation, "event_delivery_needs_retry", lambda _evt: True
+    )
+    server._sessions[sid] = session
+
+    try:
+        server._notification_poller_loop(
+            _StopAfterOneNotificationPoll(), sid, session
+        )
+
+        assert session["running"] is False
+        assert isolated_queue.qsize() == 1
+        assert isolated_queue.queue[0] is event
+    finally:
+        server._sessions.pop(sid, None)
         process_registry._completion_consumed.discard(event["session_id"])
         while not isolated_queue.empty():
             isolated_queue.get_nowait()

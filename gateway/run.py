@@ -3989,6 +3989,16 @@ async def _settle_deferred_completion_deliveries(
             continue
 
         primary_done = not record.get("claim_id")
+        lost_claims = set(record.get("lost_renewal_claims", ()))
+        primary_claim = (record.get("delegation_id"), record.get("claim_id"))
+        primary_lost = primary_claim in lost_claims
+        if primary_lost:
+            primary_done = True
+            with lock:
+                identity = record.get("identity")
+                if identity is not None:
+                    runner._completion_deliveries_inflight.discard(identity)
+                record["identity"] = None
         if not primary_done:
             try:
                 primary_done = bool(complete_completion_delivery(
@@ -4003,7 +4013,15 @@ async def _settle_deferred_completion_deliveries(
 
         sibling_remaining = []
         sibling_done = []
+        sibling_lost = []
         for sibling_evt, sibling_claim_id in record.get("siblings", []):
+            sibling_claim = (
+                str(sibling_evt.get("delegation_id") or ""),
+                sibling_claim_id,
+            )
+            if sibling_claim in lost_claims:
+                sibling_lost.append((sibling_evt, sibling_claim_id))
+                continue
             try:
                 if not complete_completion_delivery(
                     str(sibling_evt.get("delegation_id") or ""),
@@ -4031,6 +4049,10 @@ async def _settle_deferred_completion_deliveries(
                 if sibling_identity is not None:
                     runner._completion_deliveries_inflight.discard(sibling_identity)
                     runner._completion_deliveries_delivered[sibling_identity] = None
+            for sibling_evt, _claim_id in sibling_lost:
+                sibling_identity = runner._completion_delivery_identity(sibling_evt)
+                if sibling_identity is not None:
+                    runner._completion_deliveries_inflight.discard(sibling_identity)
             while (
                 len(runner._completion_deliveries_delivered)
                 > runner._completion_delivery_retention

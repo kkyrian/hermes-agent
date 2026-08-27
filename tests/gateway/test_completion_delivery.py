@@ -753,6 +753,50 @@ def test_lost_primary_claim_does_not_stop_sibling_renewal(monkeypatch):
     ]
 
 
+def test_settlement_retires_lost_claims_without_false_ack(monkeypatch):
+    from tools import async_delegation
+
+    runner = _runner(SimpleNamespace(handle_message=AsyncMock()))
+    session_key = "agent:main:telegram:dm:12345:678"
+    sibling = _async_event("deleg_sibling")
+    record = {
+        "delegation_id": "deleg_primary",
+        "claim_id": "claim-primary",
+        "identity": ("deleg_primary", "completion"),
+        "generation": 3,
+        "siblings": [(sibling, "claim-sibling")],
+        "lost_renewal_claims": {
+            ("deleg_primary", "claim-primary"),
+            ("deleg_sibling", "claim-sibling"),
+        },
+    }
+    runner._deferred_completion_deliveries = {session_key: [record]}
+    runner._completion_deliveries_inflight.add(record["identity"])
+    sibling_identity = runner._completion_delivery_identity(sibling)
+    runner._completion_deliveries_inflight.add(sibling_identity)
+    acknowledgements = []
+    monkeypatch.setattr(
+        async_delegation,
+        "complete_completion_delivery",
+        lambda delegation_id, claim_id: acknowledgements.append(
+            (delegation_id, claim_id)
+        )
+        or True,
+    )
+
+    asyncio.run(
+        _settle_deferred_completion_deliveries(
+            runner, session_key, 3, {}, turn_completed=True
+        )
+    )
+
+    assert acknowledgements == []
+    assert session_key not in runner._deferred_completion_deliveries
+    assert record["identity"] is None
+    assert ("deleg_primary", "completion") not in runner._completion_deliveries_inflight
+    assert sibling_identity not in runner._completion_deliveries_inflight
+
+
 def test_recursion_capped_internal_followup_is_scheduled_without_user_wakeup():
     seen = []
 

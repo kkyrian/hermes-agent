@@ -10277,6 +10277,11 @@ def _notification_poller_loop(
         )
         _claim = claim_event_delivery(evt, "tui-poller")
         if _claim is None:
+            # The optimistic busy flag above belongs only to a poller that
+            # actually acquired the durable claim.  A foreign live claim must
+            # not leave this session permanently busy before requeueing.
+            with session["history_lock"]:
+                session["running"] = False
             if event_delivery_needs_retry(evt):
                 process_registry.completion_queue.put(evt)
                 time.sleep(0.25)
@@ -10363,6 +10368,8 @@ def _notification_poller_loop(
         )
         _claim = claim_event_delivery(evt, "tui-poller")
         if _claim is None:
+            with session["history_lock"]:
+                session["running"] = False
             if event_delivery_needs_retry(evt):
                 deferred.append(evt)
             continue

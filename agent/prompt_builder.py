@@ -1649,7 +1649,7 @@ def _load_skill_prompt_exposure_policy() -> tuple[dict, tuple]:
     malformed_tier_container = False
     for key, tier in (("hidden", "hidden"), ("names_only", "name"), ("descriptions", "description")):
         raw_values = raw.get(key)
-        values = raw_values or []
+        values = [] if raw_values is None else raw_values
         if isinstance(values, str):
             values = [values]
         if not isinstance(values, (list, tuple, set)):

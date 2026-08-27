@@ -1024,8 +1024,9 @@ class TestSkillPromptExposure:
         assert "secret-skill" not in build_skills_system_prompt()
 
     @pytest.mark.parametrize("tier_key", ("hidden", "names_only", "descriptions"))
+    @pytest.mark.parametrize("invalid_value", ({"secret-skill": True}, False, 0))
     def test_malformed_prompt_exposure_tier_container_hides_all_skills(
-        self, monkeypatch, tmp_path, tier_key
+        self, monkeypatch, tmp_path, tier_key, invalid_value
     ):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         self._write_skill(tmp_path, "secret-skill", "Do not expose")
@@ -1033,7 +1034,7 @@ class TestSkillPromptExposure:
             "hermes_cli.config.load_config_readonly",
             lambda: {"skills": {"prompt_exposure": {
                 "default": "description",
-                tier_key: {"secret-skill": True},
+                tier_key: invalid_value,
                 "conditional": {
                     "secret-skill": {"tier": "description"},
                 },
