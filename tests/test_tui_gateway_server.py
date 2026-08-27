@@ -5958,6 +5958,7 @@ def test_notification_poller_releases_busy_flag_when_durable_claim_is_foreign(
     session = _session(session_key="session-foreign-durable-claim")
     event = {
         "type": "async_delegation",
+        "session_id": "deleg-foreign-claim",
         "delegation_id": "deleg-foreign-claim",
         "session_key": session["session_key"],
         "summary": "finished elsewhere",
