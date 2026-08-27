@@ -451,6 +451,11 @@ def finalize_turn(
         _cleanup_errors.append(f"persist_session: {_persist_err}")
         logger.error("finalize_turn: _persist_session failed: %s", _persist_err, exc_info=True)
 
+    if getattr(agent, "_incremental_persistence_failed", False):
+        completed = False
+        failed = True
+        _turn_exit_reason = "session_persistence_failed"
+
     # The gateway owns a separate in-memory history snapshot. Keep it current
     # even when finalization reports a cleanup error: a later prompt must not be
     # sent with the pre-turn snapshot while the durable DB already has this turn.

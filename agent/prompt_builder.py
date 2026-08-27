@@ -1776,7 +1776,10 @@ def _skill_prompt_exposure(
         # Fail closed there rather than advertising a host binary the agent
         # cannot invoke inside Docker/SSH/Modal/etc.
         terminal_env = str(policy.get("terminal_backend") or "local").strip().lower()
-        if conditional["requires_executables"] and terminal_env in _REMOTE_TERMINAL_BACKENDS:
+        if conditional["requires_executables"] and (
+            terminal_env in _REMOTE_TERMINAL_BACKENDS
+            or _plugin_backend_is_remote(terminal_env)
+        ):
             return "hidden"
         if any(
             shutil.which(exe) is None

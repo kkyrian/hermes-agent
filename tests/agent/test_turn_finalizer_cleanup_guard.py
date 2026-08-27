@@ -41,6 +41,7 @@ class _StubAgent:
         self._interrupt_message = None
         self._tool_guardrail_halt_decision = None
         self._response_was_previewed = False
+        self._incremental_persistence_failed = False
         self._skill_nudge_interval = 0
         self._iters_since_skill = 0
         for attr in (
@@ -163,4 +164,23 @@ def test_clean_turn_has_no_cleanup_errors_key():
     assert result["completed"] is False
     assert "cleanup_errors" not in result
 
+
+def test_false_final_persist_prevents_durable_turn_completion():
+    agent = _StubAgent(raise_in=())
+
+    def _mark_failed_persist(*_args, **_kwargs):
+        agent._incremental_persistence_failed = True
+
+    agent._persist_session = _mark_failed_persist
+
+    result = _run(
+        agent,
+        final_response="completed response",
+        api_call_count=1,
+        turn_exit_reason="text_response(finish_reason=stop)",
+    )
+
+    assert result["completed"] is False
+    assert result["failed"] is True
+    assert result["turn_exit_reason"] == "session_persistence_failed"
 

@@ -104,6 +104,22 @@ def test_persist_session_keeps_unmarked_terminal_empty_response():
     assert agent.flushed_session_db_messages[-1] == messages
 
 
+def test_persist_session_false_result_marks_turn_persistence_failed():
+    agent = AIAgent.__new__(AIAgent)
+    agent._session_persist_lock = None
+    agent._session_db = None
+    agent._incremental_persistence_failed = False
+    agent._last_persistence_error_cause = None
+    agent._drop_trailing_empty_response_scaffolding = lambda _messages: None
+    agent._save_session_log = lambda _messages: None
+    agent._flush_messages_to_session_db = lambda _messages, _history: False
+
+    AIAgent._persist_session(agent, [], conversation_history=[])
+
+    assert agent._incremental_persistence_failed is True
+    assert agent._last_persistence_error_cause == "unknown"
+
+
 
 
 def test_flush_never_writes_buried_empty_recovery_scaffolding():

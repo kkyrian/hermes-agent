@@ -1165,6 +1165,36 @@ class TestSkillPromptExposure:
             available_toolsets={"terminal"}
         )
 
+    def test_conditional_executable_fails_closed_for_remote_plugin_terminal(
+        self, monkeypatch
+    ):
+        from agent import prompt_builder
+
+        monkeypatch.setattr(
+            "agent.prompt_builder._plugin_backend_is_remote",
+            lambda backend: backend == "remote-plugin",
+        )
+        monkeypatch.setattr(
+            "agent.prompt_builder.shutil.which", lambda _name: "/bin/opencode"
+        )
+
+        assert prompt_builder._skill_prompt_exposure(
+            "opencode",
+            {
+                "terminal_backend": "remote-plugin",
+                "conditional": {
+                    "opencode": {
+                        "tier": "description",
+                        "requires_toolsets": ["terminal"],
+                        "requires_executables": ["opencode"],
+                    }
+                },
+                "tiers": {},
+                "default": "description",
+            },
+            {"terminal"},
+        ) == "hidden"
+
     def test_conditional_executable_uses_profile_terminal_backend(
         self, monkeypatch, tmp_path
     ):

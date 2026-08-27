@@ -2018,7 +2018,14 @@ class AIAgent:
             self._drop_trailing_empty_response_scaffolding(messages)
             self._session_messages = messages
             self._save_session_log(messages)
-            self._flush_messages_to_session_db(messages, conversation_history)
+            flush_result = self._flush_messages_to_session_db(
+                messages, conversation_history
+            )
+            if flush_result is False:
+                self._incremental_persistence_failed = True
+                if getattr(self, "_last_persistence_error_cause", None) is None:
+                    self._last_persistence_error_cause = "unknown"
+                return
             # Drain async token-accounting deltas at every persist point (turn
             # finalize + error exits) so a crash after this line loses at most
             # the in-flight API call's delta. Cheap no-op when nothing queued.
