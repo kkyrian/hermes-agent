@@ -937,6 +937,17 @@ class TestExpandedHardlineFloor:
         assert blocked is True
         assert description
 
+    def test_env_split_string_scan_is_linear_across_compound_commands(self):
+        command = ";".join(
+            ["true"] * 5_000 + ["env -S'wipefs -a /dev/sda'"]
+        )
+        started = time.monotonic()
+        blocked, description = detect_hardline_command(command)
+        elapsed = time.monotonic() - started
+        assert blocked is True
+        assert description
+        assert elapsed < 2.0
+
     @pytest.mark.parametrize(
         "command",
         (

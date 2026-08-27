@@ -3236,32 +3236,37 @@ def _iter_shell_command_word_spans(command: str):
 
 def _env_split_string_payloads(command: str):
     """Yield inline/positional GNU ``env -S`` command payloads."""
-    for command_start in _iter_shell_command_starts(command):
-        try:
-            words = shlex.split(command[command_start:], posix=True)
-        except ValueError:
-            continue
-        if not words or posixpath.basename(words[0]).lower() != "env":
-            continue
-        index = 1
-        while index < len(words):
-            word = words[index]
-            lower = word.lower()
-            if lower == "--":
-                break
-            if lower in {"-s", "--split-string"}:
-                if index + 1 < len(words):
-                    yield words[index + 1]
-                break
-            if lower.startswith("--split-string="):
-                yield word.split("=", 1)[1]
-                break
-            if lower.startswith("-s") and len(word) > 2:
-                yield word[2:]
-                break
-            if not lower.startswith("-"):
-                break
-            index += 1
+    for segment in _iter_top_level_shell_segments(command):
+        for command_start, _, executable_word in _iter_shell_command_word_spans(
+            segment
+        ):
+            executable = os.path.basename(
+                _deobfuscate_shell_word_for_detection(executable_word)
+            ).lower()
+            if executable != "env":
+                continue
+            words = _shell_segment_tokens(segment, command_start)
+            if not words:
+                continue
+            index = 1
+            while index < len(words):
+                word = words[index]
+                lower = word.lower()
+                if lower == "--":
+                    break
+                if lower in {"-s", "--split-string"}:
+                    if index + 1 < len(words):
+                        yield words[index + 1]
+                    break
+                if lower.startswith("--split-string="):
+                    yield word.split("=", 1)[1]
+                    break
+                if lower.startswith("-s") and len(word) > 2:
+                    yield word[2:]
+                    break
+                if not lower.startswith("-"):
+                    break
+                index += 1
 
 
 def _command_detection_variants(command: str):
