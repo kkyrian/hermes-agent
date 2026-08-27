@@ -848,7 +848,7 @@ def _iter_dispatched_command_tokens(command: str):
                         index += 1
                 if not help_only and index < len(tokens):
                     yield tokens[index:]
-            elif executable in {"command", "busybox"}:
+            elif executable in {"command", "busybox", "toybox"}:
                 index = 1
                 if (
                     executable == "command"
