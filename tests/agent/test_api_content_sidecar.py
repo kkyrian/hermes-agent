@@ -296,6 +296,33 @@ class TestPrologueStamping:
         assert "api_content" not in msg
         assert agent.content_at_persist == msg["content"]
 
+    def test_multimodal_override_retains_mandatory_notes_but_not_api_scaffolding(self):
+        agent = _FakeAgent()
+        agent._gateway_turn_context_notes = "GATEWAY-NOTE"
+        clean_content = [
+            {"type": "text", "text": "Describe this screenshot"},
+            {"type": "image_url", "image_url": {"url": "data:image/png;base64,abc"}},
+        ]
+        api_content = [
+            {"type": "text", "text": "[MODEL SWITCH NOTE]\n\nDescribe this screenshot"},
+            {"type": "image_url", "image_url": {"url": "data:image/png;base64,abc"}},
+        ]
+        with patch(
+            "hermes_cli.plugins.invoke_hook",
+            return_value=[{"context": "PLUGIN-CTX"}],
+        ), patch("hermes_cli.plugins.has_hook", return_value=True):
+            _build(
+                agent,
+                user_message=api_content,
+                persist_user_message=clean_content,
+                summarize_user_message_for_log=lambda _value: "multimodal",
+            )
+
+        assert agent._persist_user_message_override == clean_content + [
+            {"type": "text", "text": "PLUGIN-CTX"},
+            {"type": "text", "text": "GATEWAY-NOTE"},
+        ]
+
     def test_no_stamp_for_codex_app_server(self):
         """codex_app_server turns bypass the api_messages build, so the
         injected bytes are never sent — stamping would persist a lie."""
@@ -373,6 +400,44 @@ class TestFlushOverrideSidecar:
             msgs = db.get_messages_as_conversation(sid)
             assert msgs[0]["content"] == "clean text"
             assert msgs[0]["api_content"] == "live text\n\nPLUGIN-CTX"
+        finally:
+            db.close()
+
+    def test_multimodal_mandatory_notes_survive_real_persistence_override(self, tmp_path):
+        db = SessionDB(db_path=tmp_path / "state.db")
+        sid = "sess-multimodal-override"
+        db.create_session(session_id=sid, source="cli")
+        try:
+            agent = self._make_agent(db, sid)
+            live_content = [
+                {
+                    "type": "text",
+                    "text": "[MODEL SWITCH NOTE]\n\nDescribe this screenshot",
+                },
+                {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}},
+                {"type": "text", "text": "PLUGIN-CTX"},
+                {"type": "text", "text": "GATEWAY-NOTE"},
+            ]
+            durable_content = [
+                {"type": "text", "text": "Describe this screenshot"},
+                {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}},
+                {"type": "text", "text": "PLUGIN-CTX"},
+                {"type": "text", "text": "GATEWAY-NOTE"},
+            ]
+            agent._persist_user_message_idx = 0
+            agent._persist_user_message_override = durable_content
+            agent._persist_user_message_timestamp = None
+
+            agent._flush_messages_to_session_db(
+                [{"role": "user", "content": live_content}], None
+            )
+
+            messages = db.get_messages_as_conversation(sid)
+            persisted = messages[0]["content"]
+            assert persisted == (
+                "Describe this screenshot\n[screenshot]\nPLUGIN-CTX\nGATEWAY-NOTE"
+            )
+            assert "MODEL SWITCH NOTE" not in persisted
         finally:
             db.close()
 

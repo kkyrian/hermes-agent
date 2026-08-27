@@ -1353,7 +1353,9 @@ def build_turn_context(
         and bool(getattr(agent, "_last_compaction_in_place", False))
     ):
         _multimodal_content_before_notes = copy.deepcopy(_plugin_turn_content)
+    _multimodal_plugin_note = ""
     if plugin_user_context and isinstance(_plugin_turn_content, list):
+        _multimodal_plugin_note = plugin_user_context
         append_notes_to_multimodal_content(_plugin_turn_content, plugin_user_context)
         plugin_user_context = ""
 
@@ -1448,6 +1450,31 @@ def build_turn_context(
                     agent.session_id or "none",
                     exc_info=True,
                 )
+
+    # A list-valued persistence override is the clean multimodal payload used
+    # to remove API-local scaffolding (for example a queued /model note). Keep
+    # that cleanup, but carry mandatory hook/gateway context into the durable
+    # copy too; otherwise finalization replaces the enriched provider payload
+    # with the pre-hook list and a resumed session silently loses the context.
+    _persist_multimodal_override = getattr(
+        agent, "_persist_user_message_override", None
+    )
+    if (
+        isinstance(_plugin_turn_content, list)
+        and isinstance(_persist_multimodal_override, list)
+        and (_multimodal_plugin_note or _gateway_notes)
+        and not persistence_failed
+    ):
+        _enriched_persist_override = copy.deepcopy(_persist_multimodal_override)
+        if _multimodal_plugin_note:
+            append_notes_to_multimodal_content(
+                _enriched_persist_override, _multimodal_plugin_note
+            )
+        if _gateway_notes:
+            append_notes_to_multimodal_content(
+                _enriched_persist_override, _gateway_notes
+            )
+        agent._persist_user_message_override = _enriched_persist_override
 
     # Per-turn file-mutation verifier state.
     agent._turn_failed_file_mutations = {}
