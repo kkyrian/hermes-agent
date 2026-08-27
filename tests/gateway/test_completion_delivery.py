@@ -88,6 +88,12 @@ def test_failed_turn_is_not_durable_completion() -> None:
         {"result": "present"},
         {"failed": False, "internal_events_pending_sample": True},
     )
+    assert not _turn_completed_durably(
+        {"result": "present"}, {"interrupted": True, "completed": False}
+    )
+    assert not _turn_completed_durably(
+        {"result": "present"}, {"completed": False}
+    )
     assert _turn_completed_durably({"result": "present"}, {"failed": False})
 
 
@@ -879,10 +885,13 @@ def test_failed_recursion_capped_followup_retains_durable_claim():
             runner, adapter, session_key, event, 3
         ) is True
         await asyncio.gather(*list(runner._background_tasks))
-        return record
+        queued = runner._typed_internal_followups.get(session_key, [])
+        return record, queued
 
-    record = asyncio.run(_run())
+    record, queued = asyncio.run(_run())
     assert record.get("fallback_consumed") is not True
+    assert len(queued) == 1
+    assert queued[0].text == "completion evidence"
 
 
 def test_streamed_recursion_capped_followup_releases_session_and_consumes_claim(

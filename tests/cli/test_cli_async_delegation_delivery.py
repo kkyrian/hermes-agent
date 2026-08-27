@@ -6,10 +6,23 @@ from unittest.mock import MagicMock
 from cli import (
     HermesCLI,
     _DeferredCompletionInput,
+    _chat_turn_completed_durably,
     _deferred_completion_turn_is_durable,
     _retry_deferred_completion_ack,
     _schedule_deferred_completion_turn_retry,
 )
+
+
+def test_chat_turn_durability_rejects_failed_or_interrupted_results():
+    agent = MagicMock(_incremental_persistence_failed=False)
+    assert _chat_turn_completed_durably({"completed": True}, agent)
+    assert not _chat_turn_completed_durably({"failed": True}, agent)
+    assert not _chat_turn_completed_durably(
+        {"interrupted": True, "completed": False}, agent
+    )
+    assert not _chat_turn_completed_durably({"completed": False}, agent)
+    agent._incremental_persistence_failed = True
+    assert not _chat_turn_completed_durably({"completed": True}, agent)
 
 
 def test_deferred_completion_ack_requires_durable_turn():

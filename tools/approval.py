@@ -923,6 +923,25 @@ def _iter_dispatched_command_tokens(command: str):
                 find_paths = []
                 while index < len(tokens):
                     token = tokens[index]
+                    if token == "--":
+                        index += 1
+                        break
+                    if token in {"-E", "-H", "-L", "-P", "-X", "-d", "-s", "-x"}:
+                        index += 1
+                        continue
+                    if token.startswith("-O"):
+                        index += 1
+                        continue
+                    if token == "-D" and index + 1 < len(tokens):
+                        index += 2
+                        continue
+                    if token == "-f" and index + 1 < len(tokens):
+                        find_paths.append(tokens[index + 1])
+                        index += 2
+                        continue
+                    break
+                while index < len(tokens):
+                    token = tokens[index]
                     if token.startswith("-") or token in {"!", "("}:
                         break
                     find_paths.append(token)
@@ -1314,11 +1333,6 @@ def _has_destructive_storage_layer_removal(command: str) -> bool:
 def _has_unquoted_raw_device_redirection(command: str) -> bool:
     """Recognize shell redirection to a block device, excluding quoted data."""
     command = _strip_heredoc_bodies_for_detection(_strip_shell_comments(command))
-    target_re = re.compile(
-        rf'>{{1,2}}\s*(?P<quote>["\']?){_HARDLINE_BLOCK_DEVICE}'
-        r'(?P=quote)(?=\s|$|[;|&)])',
-        re.IGNORECASE,
-    )
     quote: str | None = None
     index = 0
     while index < len(command):
@@ -1354,8 +1368,18 @@ def _has_unquoted_raw_device_redirection(command: str) -> bool:
         if char == "\\" and index + 1 < len(command):
             index += 2
             continue
-        if char == ">" and target_re.match(command, index):
-            return True
+        if char == ">":
+            target_start = index + 1
+            if target_start < len(command) and command[target_start] in {">", "|", "&"}:
+                target_start += 1
+            word_start, word_end, raw_target = _read_shell_word(command, target_start)
+            if word_start != word_end:
+                target = _deobfuscate_shell_word_for_detection(raw_target)
+                target = target.rstrip(")]}`")
+                if _is_hardline_block_device(target):
+                    return True
+                index = word_end
+                continue
         index += 1
     return False
 

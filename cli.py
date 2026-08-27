@@ -4990,6 +4990,17 @@ def _deferred_completion_turn_is_durable(cli, chat_result: object) -> bool:
     )
 
 
+def _chat_turn_completed_durably(result: object, agent: object) -> bool:
+    """Return whether a chat turn safely sampled and persisted its inputs."""
+    return bool(
+        isinstance(result, dict)
+        and not result.get("failed")
+        and not result.get("interrupted")
+        and result.get("completed") is not False
+        and not getattr(agent, "_incremental_persistence_failed", False)
+    )
+
+
 def _forget_queued_deferred_completion(cli, item: _DeferredCompletionInput) -> None:
     queued = getattr(cli, "_queued_process_notification_claims", None)
     if isinstance(queued, list):
@@ -17223,10 +17234,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 print(f"\n⏩ Delivering leftover /steer as next turn: '{preview}'")
                 self._pending_input.put(_leftover_steer)
 
-            self._last_chat_turn_durable = bool(
-                isinstance(result, dict)
-                and not result.get("failed")
-                and not getattr(agent, "_incremental_persistence_failed", False)
+            self._last_chat_turn_durable = _chat_turn_completed_durably(
+                result, agent
             )
             return response
             

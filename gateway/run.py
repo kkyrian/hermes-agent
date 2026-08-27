@@ -3628,6 +3628,9 @@ def _schedule_capped_typed_internal_followup(
             turn_completed = bool(
                 getattr(event, "_hermes_turn_completed_durably", False)
             )
+            if not turn_completed:
+                _queue_typed_internal_followup(runner, session_key, event)
+                return
             if turn_completed and _mark_deferred_completion_fallback_consumed(
                 runner, session_key, event
             ):
@@ -4053,6 +4056,8 @@ def _turn_completed_durably(result_holder_value: Any, result: Any) -> bool:
         isinstance(result, dict)
         and (
             result.get("failed")
+            or result.get("interrupted")
+            or result.get("completed") is False
             or result.get("internal_events_pending_sample")
         )
     )
